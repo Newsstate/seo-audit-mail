@@ -1,5 +1,7 @@
 {
   "version": 2,
+  "buildCommand": null,
+  "outputDirectory": "public",
   "functions": {
     "api/audit_run.py":   { "maxDuration": 60 },
     "api/audit_start.py": { "maxDuration": 10 },
