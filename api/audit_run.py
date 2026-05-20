@@ -30,8 +30,11 @@ def store_get(job_id):
     r = get_redis()
     if not r:
         return {}
-    v = r.get(f"seo:{job_id}")
-    return json.loads(v) if v else {}
+    try:
+        v = r.get(f"seo:{job_id}")
+        return json.loads(v) if v else {}
+    except Exception:
+        return {}
 
 
 # ── Claude AI audit ───────────────────────────────────────────────────────────
@@ -172,7 +175,7 @@ def run_claude_audit(url):
 
 UA = "Mozilla/5.0 (compatible; SEOAuditBot/1.0)"
 
-def fetch(url, timeout=10):
+def fetch(url, timeout=8):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -182,7 +185,7 @@ def fetch(url, timeout=10):
     except Exception:
         return "", url, 0
 
-def head_ok(url, timeout=6):
+def head_ok(url, timeout=4):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA}, method="HEAD")
         with urllib.request.urlopen(req, timeout=timeout) as r:
