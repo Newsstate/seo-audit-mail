@@ -19,17 +19,8 @@ def store_get(job_id):
     r = get_redis()
     if not r:
         return None
-    try:
-        v = r.get(f"seo:{job_id}")
-        if not v:
-            return None
-        parsed = json.loads(v)
-        # Must have a status key to be valid
-        if not isinstance(parsed, dict) or "status" not in parsed:
-            return None
-        return parsed
-    except Exception:
-        return None
+    v = r.get(f"seo:{job_id}")
+    return json.loads(v) if v else None
 
 
 class handler(BaseHTTPRequestHandler):
@@ -43,11 +34,9 @@ class handler(BaseHTTPRequestHandler):
 
         record = store_get(job_id)
 
-        # No record yet = still running
         if record is None:
             return self._json(200, {"status": "running"})
 
-        # Has status key — return it
         self._json(200, record)
 
     def do_OPTIONS(self):
