@@ -1,10 +1,10 @@
 {
   "version": 2,
   "functions": {
-    "api/audit_run.py":   { "runtime": "python3.9", "maxDuration": 60 },
-    "api/audit_start.py": { "runtime": "python3.9", "maxDuration": 10 },
-    "api/audit_poll.py":  { "runtime": "python3.9", "maxDuration": 10 },
-    "api/send_email.py":  { "runtime": "python3.9", "maxDuration": 30 }
+    "api/audit_run.py":   { "maxDuration": 60 },
+    "api/audit_start.py": { "maxDuration": 10 },
+    "api/audit_poll.py":  { "maxDuration": 10 },
+    "api/send_email.py":  { "maxDuration": 30 }
   },
   "routes": [
     { "src": "/api/audit_start", "dest": "/api/audit_start.py" },
