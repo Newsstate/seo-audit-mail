@@ -152,7 +152,7 @@ def run_claude_audit(url):
 
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-20250514",
         max_tokens=8000,
         system=SYSTEM_PROMPT,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
