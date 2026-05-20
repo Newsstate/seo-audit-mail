@@ -4,7 +4,7 @@ PRIMARY:  Claude AI with web_search (full AI-powered analysis)
 FALLBACK: Direct HTTP scraping via urllib — no AI key needed.
 Triggers fallback when: API key missing, credits exhausted, any Anthropic error.
 """
-import json, os, re, urllib.request, urllib.parse, urllib.error
+import json, os, re, urllib.request, urllib.parse, urllib.error, threading
 from http.server import BaseHTTPRequestHandler
 
 
@@ -193,6 +193,22 @@ def head_ok(url, timeout=4):
     except Exception:
         return False
 
+def check_parallel(urls, timeout=4):
+    """Check multiple URLs simultaneously using threads. Returns dict url->bool."""
+    results = {}
+    lock = threading.Lock()
+    def _check(u):
+        ok = head_ok(u, timeout=timeout)
+        with lock:
+            results[u] = ok
+    threads = [threading.Thread(target=_check, args=(u,)) for u in urls]
+    for t in threads:
+        t.daemon = True
+        t.start()
+    for t in threads:
+        t.join(timeout=timeout + 1)
+    return results
+
 def gmeta(html, name):
     for p in [
         rf'<meta\s+name=["\']?{re.escape(name)}["\']?\s+content=["\']([^"\']*)["\']',
@@ -296,13 +312,16 @@ def run_fallback_audit(url):
     fpxm    = re.search(r"fbq\('init',\s*['\"](\d+)['\"]", html)
     fb_px   = fpxm.group(1) if fpxm else ""
 
-    # Robots / Sitemap / llms.txt
-    robots_url  = f"{base}/robots.txt"
-    robots_ok   = head_ok(robots_url)
-    sitemap_url = next((u for u in [f"{base}/sitemap_index.xml", f"{base}/sitemap.xml"]
-                        if head_ok(u)), "")
-    llms_url = f"{base}/llms.txt"
-    has_llms = head_ok(llms_url)
+    # Robots / Sitemap / llms.txt — checked in PARALLEL (not sequential)
+    robots_url   = f"{base}/robots.txt"
+    sitemap_xml  = f"{base}/sitemap_index.xml"
+    sitemap_xml2 = f"{base}/sitemap.xml"
+    llms_url     = f"{base}/llms.txt"
+    checks = check_parallel([robots_url, sitemap_xml, sitemap_xml2, llms_url])
+    robots_ok   = checks.get(robots_url, False)
+    sitemap_url = (sitemap_xml if checks.get(sitemap_xml)
+                   else (sitemap_xml2 if checks.get(sitemap_xml2) else ""))
+    has_llms    = checks.get(llms_url, False)
 
     # Social links
     links    = re.findall(r'href=["\']([^"\']+)["\']', html, re.I)
