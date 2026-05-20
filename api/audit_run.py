@@ -30,11 +30,8 @@ def store_get(job_id):
     r = get_redis()
     if not r:
         return {}
-    try:
-        v = r.get(f"seo:{job_id}")
-        return json.loads(v) if v else {}
-    except Exception:
-        return {}
+    v = r.get(f"seo:{job_id}")
+    return json.loads(v) if v else {}
 
 
 # ── Claude AI audit ───────────────────────────────────────────────────────────
@@ -194,19 +191,16 @@ def head_ok(url, timeout=4):
         return False
 
 def check_parallel(urls, timeout=4):
-    """Check multiple URLs simultaneously using threads. Returns dict url->bool."""
+    """Check multiple URLs in parallel. Returns dict url->bool."""
     results = {}
     lock = threading.Lock()
-    def _check(u):
+    def _chk(u):
         ok = head_ok(u, timeout=timeout)
         with lock:
             results[u] = ok
-    threads = [threading.Thread(target=_check, args=(u,)) for u in urls]
-    for t in threads:
-        t.daemon = True
-        t.start()
-    for t in threads:
-        t.join(timeout=timeout + 1)
+    threads = [threading.Thread(target=_chk, args=(u,)) for u in urls]
+    for t in threads: t.daemon = True; t.start()
+    for t in threads: t.join(timeout=timeout + 1)
     return results
 
 def gmeta(html, name):
@@ -312,16 +306,16 @@ def run_fallback_audit(url):
     fpxm    = re.search(r"fbq\('init',\s*['\"](\d+)['\"]", html)
     fb_px   = fpxm.group(1) if fpxm else ""
 
-    # Robots / Sitemap / llms.txt — checked in PARALLEL (not sequential)
+    # Robots / Sitemap / llms.txt — parallel HEAD checks
     robots_url   = f"{base}/robots.txt"
-    sitemap_xml  = f"{base}/sitemap_index.xml"
+    sitemap_xml1 = f"{base}/sitemap_index.xml"
     sitemap_xml2 = f"{base}/sitemap.xml"
     llms_url     = f"{base}/llms.txt"
-    checks = check_parallel([robots_url, sitemap_xml, sitemap_xml2, llms_url])
-    robots_ok   = checks.get(robots_url, False)
-    sitemap_url = (sitemap_xml if checks.get(sitemap_xml)
-                   else (sitemap_xml2 if checks.get(sitemap_xml2) else ""))
-    has_llms    = checks.get(llms_url, False)
+    chk = check_parallel([robots_url, sitemap_xml1, sitemap_xml2, llms_url])
+    robots_ok   = chk.get(robots_url, False)
+    sitemap_url = (sitemap_xml1 if chk.get(sitemap_xml1)
+                   else sitemap_xml2 if chk.get(sitemap_xml2) else "")
+    has_llms    = chk.get(llms_url, False)
 
     # Social links
     links    = re.findall(r'href=["\']([^"\']+)["\']', html, re.I)
