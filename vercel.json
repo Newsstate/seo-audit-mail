@@ -1,18 +1,14 @@
 {
   "version": 2,
-  "buildCommand": null,
-  "outputDirectory": "public",
-  "functions": {
-    "api/audit_run.py":   { "maxDuration": 60 },
-    "api/audit_start.py": { "maxDuration": 10 },
-    "api/audit_poll.py":  { "maxDuration": 10 },
-    "api/send_email.py":  { "maxDuration": 30 }
-  },
+  "builds": [
+    { "src": "api/*.py", "use": "@vercel/python" },
+    { "src": "public/**", "use": "@vercel/static" }
+  ],
   "routes": [
     { "src": "/api/audit_start", "dest": "/api/audit_start.py" },
-    { "src": "/api/audit_poll",  "dest": "/api/audit_poll.py"  },
-    { "src": "/api/audit_run",   "dest": "/api/audit_run.py"   },
-    { "src": "/api/send_email",  "dest": "/api/send_email.py"  },
-    { "src": "/(.*)",            "dest": "/public/$1"          }
+    { "src": "/api/audit_poll",  "dest": "/api/audit_poll.py" },
+    { "src": "/api/audit_run",   "dest": "/api/audit_run.py" },
+    { "src": "/api/send_email",  "dest": "/api/send_email.py" },
+    { "src": "/(.*)", "dest": "/public/$1" }
   ]
 }
