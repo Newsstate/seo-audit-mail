@@ -7,10 +7,11 @@ Fetches audit result from Redis and emails:
 Required Vercel env vars:
   SMTP_HOST  SMTP_PORT  SMTP_USER  SMTP_PASS  SMTP_FROM
 """
-import json, os, re, smtplib, ssl
+import json, os, re, smtplib, ssl, urllib.request, urllib.error
 from email.mime.multipart import MIMEMultipart
 from email.mime.text      import MIMEText
 from email.mime.base      import MIMEBase
+from email.mime.application import MIMEApplication
 from email                import encoders
 from http.server          import BaseHTTPRequestHandler
 
@@ -526,6 +527,61 @@ def build_full_report_html(D, name, email, date):
 </body></html>"""
 
 
+
+# ── Convert HTML to PDF via API ───────────────────────────────────────────────
+
+def html_to_pdf(html_content):
+    """
+    Convert HTML to PDF bytes using html2pdf.app (free, no signup needed).
+    Falls back to raw HTML bytes if conversion fails.
+    Returns (pdf_bytes, is_pdf).
+    """
+    try:
+        api_key = os.environ.get("HTML2PDF_API_KEY", "")
+        
+        if api_key:
+            # PDFShift — 50 free PDFs/month, high quality
+            # Sign up at pdfshift.io to get API key
+            payload = json.dumps({
+                "source": html_content,
+                "landscape": False,
+                "use_print": True,
+                "margin": {"top": "13mm", "bottom": "13mm", "left": "13mm", "right": "13mm"},
+                "format": "A4"
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.pdfshift.io/v3/convert/pdf",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Basic {__import__('base64').b64encode(f'api:{api_key}'.encode()).decode()}"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.read(), True
+
+        else:
+            # html2pdf.app — free, no API key needed (100/month limit)
+            payload = json.dumps({
+                "html": html_content,
+                "options": {
+                    "format": "A4",
+                    "margin": {"top": "13mm", "bottom": "13mm", "left": "13mm", "right": "13mm"},
+                    "printBackground": True
+                }
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://html2pdf.app/f/pdf",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.read(), True
+
+    except Exception:
+        # Fallback: send HTML file if PDF conversion fails
+        return html_content.encode("utf-8"), False
+
 # ── Send email ────────────────────────────────────────────────────────────────
 
 def send_email_with_attachment(to_addr, subject, html_body, text_body, attachment_html, filename):
@@ -538,24 +594,31 @@ def send_email_with_attachment(to_addr, subject, html_body, text_body, attachmen
     if not host or not user or not pwd:
         raise ValueError("SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in Vercel env vars.")
 
-    # Root message with mixed content
+    # Convert HTML report to PDF
+    att_bytes, is_pdf = html_to_pdf(attachment_html)
+    att_filename = filename.replace(".html", ".pdf") if is_pdf else filename
+
+    # Root message
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = from_hdr
     msg["To"]      = to_addr
 
-    # Alternative part (text + html body)
+    # Email body (summary)
     alt = MIMEMultipart("alternative")
     alt.attach(MIMEText(text_body, "plain"))
     alt.attach(MIMEText(html_body, "html"))
     msg.attach(alt)
 
-    # HTML file attachment
-    att = MIMEBase("text", "html")
-    att.set_payload(attachment_html.encode("utf-8"))
-    encoders.encode_base64(att)
-    att.add_header("Content-Disposition", "attachment", filename=filename)
-    att.add_header("Content-Type", "text/html; charset=utf-8")
+    # PDF (or HTML fallback) attachment
+    if is_pdf:
+        att = MIMEApplication(att_bytes, _subtype="pdf")
+    else:
+        att = MIMEBase("text", "html")
+        att.set_payload(att_bytes)
+        encoders.encode_base64(att)
+
+    att.add_header("Content-Disposition", "attachment", filename=att_filename)
     msg.attach(att)
 
     ctx = ssl.create_default_context()
@@ -597,7 +660,7 @@ class handler(BaseHTTPRequestHandler):
 
             # Build full report as HTML attachment
             full_report = build_full_report_html(D, name, to_email, date)
-            filename    = f"seo-report-{domain}-{datetime.now().strftime('%Y%m%d')}.html"
+            filename    = f"seo-report-{domain}-{datetime.now().strftime('%Y%m%d')}.pdf"
 
             send_email_with_attachment(
                 to_email,
