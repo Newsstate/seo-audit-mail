@@ -1179,18 +1179,31 @@ function buildReport(D,name,email){
   $('f-date').textContent=date;
 
   // Overall grade
-  const og=D.overall?.grade||'B',oc=GC(og),r=58,circ=2*Math.PI*r;
+  const og=D.overall?.grade||'B',oc=GC(og),ovR=62,ovCirc=2*Math.PI*ovR;
   $('ov-arc').setAttribute('stroke',oc);
-  $('ov-arc').setAttribute('stroke-dasharray',circ.toFixed(1));
-  $('ov-arc').setAttribute('stroke-dashoffset',(circ*(1-GP(og))).toFixed(1));
+  $('ov-arc').setAttribute('stroke-dasharray',ovCirc.toFixed(1));
+  $('ov-arc').setAttribute('stroke-dashoffset',(ovCirc*(1-GP(og))).toFixed(1));
   $('ov-g').setAttribute('fill',oc);$('ov-g').textContent=og;
   $('ov-lbl').textContent=gradeTxt(og).charAt(0).toUpperCase()+gradeTxt(og).slice(1);
+  $('ov-lbl').style.color=oc;
 
   // Category grades
   const cats=D.cats||[];
   $('cat-grades').innerHTML=cats.map(c=>`<div class="cat-g">${svgC(c.grade,57)}<div class="cat-g-lbl">${c.lbl}</div></div>`).join('');
   cats.forEach(c=>{
-    const e=$('cg-'+c.k);if(e)e.innerHTML=svgC(c.grade,50);
+    // sec-hdr mini grade circle (white on red bg)
+    const e=$('cg-'+c.k);
+    if(e){
+      const g=c.grade,sz=44,r=sz/2-4,circ=(2*Math.PI*r).toFixed(1),fs=g.length>2?11:13;
+      e.innerHTML=`<svg width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}">
+        <circle cx="${sz/2}" cy="${sz/2}" r="${r}" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="3.5"/>
+        <circle cx="${sz/2}" cy="${sz/2}" r="${r}" fill="none" stroke="#fff" stroke-width="3.5"
+          stroke-dasharray="${circ}" stroke-dashoffset="${(2*Math.PI*r*(1-GP(g))).toFixed(1)}"
+          stroke-linecap="round" transform="rotate(-90 ${sz/2} ${sz/2})"/>
+        <text x="${sz/2}" y="${sz/2+fs*.38}" text-anchor="middle" font-family="Sora,sans-serif"
+          font-size="${fs}" font-weight="700" fill="#fff">${g}</text></svg>`;
+    }
+    // sec-intro large grade circle (colored)
     const s=$('si-'+c.k);if(s)s.innerHTML=svgC(c.grade,67);
   });
   drawRadar(cats);
@@ -1234,7 +1247,7 @@ function buildReport(D,name,email){
   $('h1-body').innerHTML=(op.h1||[{tag:'H1',v:'Not found'}]).map(h=>`<tr><td><strong>${h.tag}</strong></td><td>${h.v}</td></tr>`).join('');
 
   // H freq
-  $('hfreq-grid').innerHTML=(op.hfreq||[]).filter(h=>h.n>0).map(h=>`<div style="background:#f8f9fb;border:1px solid var(--border);border-radius:var(--r);padding:9px 16px;text-align:center;min-width:70px"><div style="font-size:21px;font-weight:700;color:var(--red)">${h.n}</div><div style="font-size:10px;color:var(--lite)">${h.t} Tags</div></div>`).join('');
+  $('hfreq-grid').innerHTML=(op.hfreq||[]).filter(h=>h.n>0).map(h=>`<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 16px;text-align:center;min-width:70px"><div style="font-size:22px;font-weight:700;color:#e8453c">${h.n}</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">${h.t} Tags</div></div>`).join('');
 
   // Keywords
   $('kw-body').innerHTML=(op.kws||[]).map(k=>`<tr><td><strong>${k.p}</strong></td><td style="text-align:center">${tick(k.ti)}</td><td style="text-align:center">${tick(k.me)}</td><td style="text-align:center">${tick(k.hd)}</td><td style="text-align:center;font-weight:600">${k.f||'—'}</td></tr>`).join('');
@@ -1308,7 +1321,7 @@ function buildReport(D,name,email){
   $('llms-body').textContent=geo.llmsDesc||'';
 
   const tr=geo.traffic||{};
-  $('traffic-grid').innerHTML=[['Google Organic',tr.org||0],['Paid Search',tr.paid||0],['AI Overviews',tr.ai||0]].map(([l,v])=>`<div class="mcard"><div class="mval ${v>0?'mv-g':''}">${v.toLocaleString()}</div><div class="mlbl">${l}</div></div>`).join('');
+  $('traffic-grid').innerHTML=[['Google Organic',tr.org||0],['Paid Search',tr.paid||0],['AI Overviews',tr.ai||0]].map(([l,v])=>`<div class="mcard"><div class="mval" style="color:${v>0?'#16a34a':'#9ca3af'}">${v.toLocaleString()}</div><div class="mlbl">${l}</div></div>`).join('');
 
   $('kw-rank').innerHTML=(geo.kws||[]).map(k=>`<tr><td><strong>${k.kw}</strong></td><td>${k.co}</td><td><span class="${k.pos<=3?'pb-g':k.pos<=10?'pb-w':'pb-r'}">${k.pos}</span></td><td>${(k.vol||0).toLocaleString()}</td><td>${k.tr||0}</td></tr>`).join('');
   $('kw-pos').innerHTML=(geo.positions||[]).map(p=>`<tr><td>${p.r}</td><td><strong>${p.n}</strong></td></tr>`).join('');
@@ -1385,17 +1398,21 @@ function buildReport(D,name,email){
 
   const spd=pf.speed||{};
   si('ci-spd',spd.ok?'p':'w');$('spd-st').textContent=spd.ok?'loads in a reasonable time':'slow — needs improvement';
-  $('sp-srv').textContent=spd.srv||'—';$('sp-cnt').textContent=spd.cnt||'—';$('sp-scr').textContent=spd.scr||'—';
+  function spdCol(val,goodMax,warnMax){const n=parseFloat(val)||0;return n===0?'gv-n':n<=goodMax?'gv-g':n<=warnMax?'gv-w':'gv-b'}
+  $('sp-srv').textContent=spd.srv||'—';$('sp-srv').className='gauge-val '+spdCol(spd.srv,0.6,1.5);
+  $('sp-cnt').textContent=spd.cnt||'—';$('sp-cnt').className='gauge-val '+spdCol(spd.cnt,3,6);
+  $('sp-scr').textContent=spd.scr||'—';$('sp-scr').className='gauge-val '+spdCol(spd.scr,5,10);
 
   const sz=pf.size||{};
   si('ci-sz',sz.ok?'p':'w');$('sz-st').textContent=sz.ok?'file size is reasonably low':'file size is too large';
   $('sz-tot').textContent=sz.tot||'—';
-  $('sz-bars').innerHTML=[['HTML',sz.html],['CSS',sz.css],['JavaScript',sz.js],['Images',sz.img],['Other',sz.other]].map(([l,v])=>{const n=parseFloat(v)||0,p=Math.min(Math.round(n/1.5*100),100);return`<div class="sbar"><div class="sbar-l">${l}</div><div class="sbar-tr"><div class="sbar-fi" style="width:${p}%"></div></div><div class="sbar-v">${v||'—'}</div></div>`}).join('');
+  const szColors={HTML:'#3b82f6',CSS:'#0891b2',JavaScript:'#d97706',Images:'#16a34a',Other:'#9ca3af'};
+  $('sz-bars').innerHTML=[['HTML',sz.html],['CSS',sz.css],['JavaScript',sz.js],['Images',sz.img],['Other',sz.other]].map(([l,v])=>{const n=parseFloat(v)||0,p=Math.min(Math.round(n/5*100),100),col=szColors[l]||'#9ca3af';return`<div class="sbar"><div class="sbar-l">${l}</div><div class="sbar-tr"><div class="sbar-fi" style="width:${p}%;background:${col}"></div></div><div class="sbar-v">${v||'—'}</div></div>`}).join('');
 
   const comp=pf.comp||{};
   si('ci-comp',comp.ok?'p':'w');$('comp-st').textContent=comp.ok?'compression active':'limited compression';
   $('comp-r').textContent=comp.rate||'—';
-  $('comp-tbl').innerHTML=[['HTML',comp.html],['CSS',comp.css],['JavaScript',comp.js],['Images',comp.img],['Other',comp.other]].map(([l,v])=>{const n=parseInt(v)||0,col=n>=50?'#1e8449':n>0?'#b7770d':'#ccc';return`<tr><td style="width:80px;padding:4px 0;font-size:12px;color:var(--sub)">${l}</td><td><div class="cbar-wrap"><div class="cbar-tr"><div class="cbar-fi" style="width:${n}%;background:${col}"></div></div><span style="font-size:11.5px;color:var(--lite);width:38px;text-align:right">${v||'—'}</span></div></td></tr>`}).join('');
+  $('comp-tbl').innerHTML=[['HTML',comp.html],['CSS',comp.css],['JavaScript',comp.js],['Images',comp.img],['Other',comp.other]].map(([l,v])=>{const n=parseInt(v)||0,col=n>=50?'#1e8449':n>0?'#b7770d':'#ccc';return`<tr><td style="width:80px;padding:4px 0;font-size:12px;color:#6b7280">${l}</td><td><div class="cbar-wrap"><div class="cbar-tr"><div class="cbar-fi" style="width:${n}%;background:${col}"></div></div><span style="font-size:11.5px;color:var(--lite);width:38px;text-align:right">${v||'—'}</span></div></td></tr>`}).join('');
 
   si('ci-http2',pf.http2?'p':'w');$('http2-st').textContent=pf.http2?'HTTP/2 protocol in use':'not using HTTP/2 — update recommended';
   si('ci-imgopt',pf.imgOpt?'p':'w');$('imgopt-st').textContent=pf.imgOpt?'all images appear optimised':'some images need optimisation';
@@ -1413,7 +1430,7 @@ function buildReport(D,name,email){
     <div style="flex:1">
       <div class="soc-name">${s.name} — ${s.linked?'linked':'not linked'}</div>
       <div class="soc-url">${s.url||''}</div>
-      ${s.stat?`<div class="soc-stat">${s.stat}</div>`:''}
+      ${s.stat&&s.stat.trim()?`<div class="soc-stat" style="color:#16a34a;font-size:11px;font-weight:600">${s.stat}</div>`:''}
     </div>
     <div style="color:${s.linked?'var(--green)':'var(--lite)'};font-size:15px;font-weight:700">${s.linked?'✓':'—'}</div>
   </div>`).join('');
@@ -1473,14 +1490,14 @@ function buildReport(D,name,email){
     tech.http3?`<div class="ttech">HTTP/3 ✓</div>`:''
   ].filter(Boolean).join('');
 
-  // ── RECOMMENDATIONS ──
-  $('recs-body').innerHTML=(D.recommendations||[]).map((r,i,arr)=>`
-    <div class="crow"${i===arr.length-1?' style="border-bottom:none"':''}>
-      <div class="crow-hdr">
-        <div class="cicon ci-w" style="font-size:10px;font-weight:700">${r.priority||i+1}</div>
-        <div class="crow-title" style="font-weight:600">${r.title}</div>
+  // ── RECOMMENDATIONS — HOTH numbered red-panel cards ──
+  $('recs-body').innerHTML=(D.recommendations||[]).map((r,i)=>`
+    <div class="rec-item" style="${i===0?'':'margin-top:10px'}">
+      <div class="rec-num">${r.priority||i+1}</div>
+      <div class="rec-body">
+        <div class="rec-title">${r.title||''}</div>
+        <div class="rec-detail">${r.detail||''}</div>
       </div>
-      <div class="rec-item">${r.detail}</div>
     </div>`).join('');
 }
 
