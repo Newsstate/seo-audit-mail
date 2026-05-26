@@ -912,10 +912,13 @@ input.err{border-color:#ef4444}
         <!-- CWV -->
         <div class="crow"><div class="crow-hdr"><div class="cicon" id="ci-cwv">!</div><div class="crow-title">Google Core Web Vitals — <span id="cwv-st"></span></div></div>
           <div class="crow-body" id="cwv-adv"></div>
+          <div id="cwv-src" style="padding:0 0 6px 28px"></div>
           <div class="gauge-row">
-            <div class="gauge"><div class="gauge-val" id="cwv-lcp">—</div><div class="gauge-lbl">Largest Contentful Paint</div><div class="gauge-tgt">Target ≤ 2.5s</div></div>
-            <div class="gauge"><div class="gauge-val" id="cwv-inp">—</div><div class="gauge-lbl">Interaction to Next Paint</div><div class="gauge-tgt">Target ≤ 200ms</div></div>
-            <div class="gauge"><div class="gauge-val" id="cwv-cls">—</div><div class="gauge-lbl">Cumulative Layout Shift</div><div class="gauge-tgt">Target ≤ 0.1</div></div>
+            <div class="gauge"><div class="gauge-val" id="cwv-lcp">—</div><div class="gauge-lbl">Largest Contentful Paint</div><div class="gauge-tgt">Target ≤ 2.5s</div><div id="cwv-lcp-r"></div></div>
+            <div class="gauge"><div class="gauge-val" id="cwv-inp">—</div><div class="gauge-lbl">Interaction to Next Paint</div><div class="gauge-tgt">Target ≤ 200ms</div><div id="cwv-inp-r"></div></div>
+            <div class="gauge"><div class="gauge-val" id="cwv-cls">—</div><div class="gauge-lbl">Cumulative Layout Shift</div><div class="gauge-tgt">Target ≤ 0.1</div><div id="cwv-cls-r"></div></div>
+            <div class="gauge"><div class="gauge-val" id="cwv-fcp" style="font-size:18px">—</div><div class="gauge-lbl">First Contentful Paint</div><div class="gauge-tgt">Target ≤ 1.8s</div></div>
+            <div class="gauge"><div class="gauge-val" id="cwv-ttfb" style="font-size:18px">—</div><div class="gauge-lbl">Time to First Byte</div><div class="gauge-tgt">Target ≤ 800ms</div></div>
           </div>
         </div>
         <!-- Mobile PSI -->
@@ -1263,17 +1266,40 @@ function buildReport(D,name,email){
   $('us-h').textContent=GP(usG)>.66?'Your usability is good':'Your usability could be better';
   $('us-p').textContent='Usability issues affect bounce rates and user satisfaction — both indirectly impact search rankings.';
 
-  const cwv=us.cwv||{};
+  const cwv=us.cwv||{},crux=us.crux||{};
   const lcpV=parseFloat(cwv.lcp),inpV=parseFloat(cwv.inp),clsV=parseFloat(cwv.cls);
+  const hasCrux=crux.has_data||cwv.lcp&&cwv.lcp!=='N/A';
   si('ci-cwv',cwv.pass===true?'p':cwv.pass===false?'f':'i');
-  $('cwv-st').textContent=cwv.pass===true?'passed assessment':cwv.pass===false?'failed assessment':'data unavailable — check Search Console';
+  $('cwv-st').textContent=cwv.pass===true?'passed assessment':cwv.pass===false?'failed assessment':hasCrux?'partial data':'data unavailable';
   $('cwv-adv').textContent=us.cwvAdvice||'';
+
+  // Source badge
+  const cruxSrc=cwv.source||crux.source||'';
+  const srcBadge=cruxSrc?`<span style="font-size:10px;background:#eff6ff;color:#2563eb;border:0.5px solid #bfdbfe;border-radius:20px;padding:2px 8px;margin-left:8px">${cruxSrc.includes('url')?'URL-level field data':'Origin-level field data'} · Chrome UX Report</span>`:'';
+  if($('cwv-src'))$('cwv-src').innerHTML=srcBadge;
+
+  function ratingCol(r){return r==='FAST'?'gv-g':r==='MODERATE'?'gv-w':r?'gv-b':'';}
+  function ratingBadge(r){
+    if(!r)return'';
+    const bg=r==='FAST'?'#ecfdf5':r==='MODERATE'?'#fffbeb':'#fef2f2';
+    const col=r==='FAST'?'#059669':r==='MODERATE'?'#d97706':'#dc2626';
+    const bdr=r==='FAST'?'#a7f3d0':r==='MODERATE'?'#fde68a':'#fecaca';
+    return `<div style="font-size:9px;font-weight:600;background:${bg};color:${col};border:0.5px solid ${bdr};border-radius:20px;padding:1px 7px;margin-top:4px">${r}</div>`;
+  }
+
   $('cwv-lcp').textContent=cwv.lcp||'N/A';
-  $('cwv-lcp').className='gauge-val '+(isNaN(lcpV)?'':(lcpV<=2.5?'gv-g':lcpV<=4?'gv-w':'gv-b'));
+  $('cwv-lcp').className='gauge-val '+(ratingCol(cwv.lcp_rating)||(isNaN(lcpV)?'':(lcpV<=2.5?'gv-g':lcpV<=4?'gv-w':'gv-b')));
+  if($('cwv-lcp-r'))$('cwv-lcp-r').innerHTML=ratingBadge(cwv.lcp_rating);
   $('cwv-inp').textContent=cwv.inp||'N/A';
-  $('cwv-inp').className='gauge-val '+(isNaN(inpV)?'':(inpV<=200?'gv-g':inpV<=500?'gv-w':'gv-b'));
+  $('cwv-inp').className='gauge-val '+(ratingCol(cwv.inp_rating)||(isNaN(inpV)?'':(inpV<=200?'gv-g':inpV<=500?'gv-w':'gv-b')));
+  if($('cwv-inp-r'))$('cwv-inp-r').innerHTML=ratingBadge(cwv.inp_rating);
   $('cwv-cls').textContent=cwv.cls||'N/A';
-  $('cwv-cls').className='gauge-val '+(isNaN(clsV)?'':(clsV<=.1?'gv-g':clsV<=.25?'gv-w':'gv-b'));
+  $('cwv-cls').className='gauge-val '+(ratingCol(cwv.cls_rating)||(isNaN(clsV)?'':(clsV<=.1?'gv-g':clsV<=.25?'gv-w':'gv-b')));
+  if($('cwv-cls-r'))$('cwv-cls-r').innerHTML=ratingBadge(cwv.cls_rating);
+
+  // Extra CrUX metrics
+  if(cwv.fcp&&$('cwv-fcp'))$('cwv-fcp').textContent=cwv.fcp;
+  if(cwv.ttfb&&$('cwv-ttfb'))$('cwv-ttfb').textContent=cwv.ttfb;
 
   const mob=us.mob||{},hasMob=mob.score>0;
   const mc=!hasMob?'var(--lite)':mob.score>=90?'var(--green)':mob.score>=50?'var(--warn)':'var(--fail)';
