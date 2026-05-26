@@ -396,10 +396,10 @@ input.err{border-color:#ef4444}
 /* Expandable explanation box — HOTH blue-grey */
 .crow-body{
   margin:10px 0 0 32px;
-  background:#eff6ff;
+  background:#f0f7ff;
   border-radius:6px;
   padding:11px 14px;
-  font-size:12px;color:#374151;line-height:1.7;
+  font-size:12px;color:#1e3a5f;line-height:1.7;
   border-left:none;
 }
 .crow-val{
@@ -529,8 +529,8 @@ input.err{border-color:#ef4444}
   color:#fff;font-size:18px;font-weight:700;flex-shrink:0;
 }
 .rec-body{padding:12px 16px;flex:1}
-.rec-title{font-size:13px;font-weight:700;color:#111827;margin-bottom:4px}
-.rec-detail{font-size:12px;color:#6b7280;line-height:1.65}
+.rec-title{font-size:13px;font-weight:700;color:#111827;margin-bottom:6px}
+.rec-detail{font-size:12.5px;color:#374151;line-height:1.7}
 
 /* ── Footer ── */
 .rpt-footer{
@@ -949,8 +949,8 @@ input.err{border-color:#ef4444}
                     <div style="background:#1f2937;height:16px;display:flex;align-items:center;justify-content:center">
                       <div style="width:40px;height:4px;background:#374151;border-radius:2px"></div>
                     </div>
-                    <div style="height:224px;overflow:hidden;position:relative;background:#fff" id="mob-screen">
-                      <iframe id="mob-iframe" style="width:390px;height:844px;transform:scale(0.338);transform-origin:0 0;pointer-events:none;border:none" loading="lazy" title="Mobile preview"></iframe>
+                    <div style="height:224px;overflow:hidden;position:relative;background:#f9fafb" id="mob-screen">
+                      <div style="height:100%;display:flex;align-items:center;justify-content:center"><div style="font-size:10px;color:#d1d5db">Loading...</div></div>
                     </div>
                   </div>
                 </div>
@@ -988,8 +988,8 @@ input.err{border-color:#ef4444}
                   </div>
                   <div id="desk-url-bar" style="flex:1;background:#1f2937;border-radius:3px;padding:2px 7px;font-size:8.5px;color:#9ca3af;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
                 </div>
-                <div style="height:220px;overflow:hidden;background:#fff;border-radius:0 0 4px 4px" id="desk-screen">
-                  <iframe id="desk-iframe" style="width:1280px;height:800px;transform:scale(0.25);transform-origin:0 0;pointer-events:none;border:none" loading="lazy" title="Desktop preview"></iframe>
+                <div style="height:220px;overflow:hidden;background:#f9fafb;border-radius:0 0 4px 4px" id="desk-screen">
+                    <div style="height:100%;display:flex;align-items:center;justify-content:center"><div style="font-size:10px;color:#d1d5db">Loading...</div></div>
                 </div>
               </div>
               <div style="font-size:10px;color:#9ca3af;text-align:center;margin-top:6px">1280px × 800px</div>
@@ -1024,7 +1024,7 @@ input.err{border-color:#ef4444}
           <div style="margin:12px 0 0 28px">
             <div style="display:flex;align-items:center;gap:11px;margin-bottom:13px">
               <div style="width:58px;height:58px;border-radius:50%;border:4px solid var(--green);display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="font-size:12px;font-weight:600;color:var(--green)" id="sz-tot">—</span></div>
-              <span style="font-size:12.5px;color:var(--sub)">Total download size</span>
+              <span style="font-size:12.5px;color:#6b7280">Total download size</span>
             </div>
             <div id="sz-bars"></div>
           </div>
@@ -1033,7 +1033,7 @@ input.err{border-color:#ef4444}
           <div style="margin:12px 0 0 28px">
             <div style="display:flex;align-items:center;gap:11px;margin-bottom:11px">
               <div style="width:52px;height:52px;border-radius:50%;border:4px solid var(--green);display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="font-size:12px;font-weight:600;color:var(--green)" id="comp-r">—</span></div>
-              <span style="font-size:12.5px;color:var(--sub)">Overall compression rate</span>
+              <span style="font-size:12.5px;color:#6b7280">Overall compression rate</span>
             </div>
             <table class="ctbl" id="comp-tbl"></table>
           </div>
@@ -1085,7 +1085,7 @@ input.err{border-color:#ef4444}
               <div style="font-size:34px;font-weight:700" id="rev-r">—</div>
               <div>
                 <div class="stars" id="rev-s">☆☆☆☆☆</div>
-                <div style="font-size:13px;color:var(--sub)" id="rev-c">— reviews</div>
+                <div style="font-size:13px;color:#6b7280" id="rev-c">— reviews</div>
               </div>
             </div>
             <div id="rev-bars" style="flex:1;min-width:160px;margin-top:4px"></div>
@@ -1118,7 +1118,7 @@ input.err{border-color:#ef4444}
 
     <div class="rpt-footer">
       <div class="rft-l">SEO Audit for <strong id="f-dom"></strong> · Powered by <strong>Claude AI</strong></div>
-      <div style="font-size:11.5px;color:var(--lite)" id="f-date"></div>
+      <div style="font-size:11.5px;color:#9ca3af" id="f-date"></div>
     </div>
   </div><!-- /#rpt -->
 
@@ -1373,7 +1373,7 @@ function buildReport(D,name,email){
   si('ci-mob',!hasMob?'i':mob.score>=90?'p':mob.score>=50?'w':'f');
   $('mob-lbl').textContent=!hasMob?'PageSpeed API not configured':mob.score>=90?'excellent':mob.score>=50?'needs improvement':'scoring poorly';$('mob-lbl').style.color=mc;
   $('mob-tbl').innerHTML=[['First Contentful Paint',mob.fcp],['Speed Index',mob.si],['Largest Contentful Paint',mob.lcp],['Time to Interactive',mob.tti],['Total Blocking Time',mob.tbt],['Cumulative Layout Shift',mob.cls]].map(([l,v])=>`<tr><td>${l}</td><td><strong>${v||'—'}</strong></td></tr>`).join('');
-  $('mob-opp').innerHTML=(mob.opps||[]).length?mob.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--lite);font-style:italic">No major opportunities found</td></tr>';
+  $('mob-opp').innerHTML=(mob.opps||[]).length?mob.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:#d97706">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:#9ca3af;font-style:italic">No major opportunities found</td></tr>';
 
   const desk=us.desk||{},hasDesk=desk.score>0;
   const dc=!hasDesk?'var(--lite)':desk.score>=90?'var(--green)':desk.score>=50?'var(--warn)':'var(--fail)';
@@ -1381,7 +1381,7 @@ function buildReport(D,name,email){
   si('ci-desk',!hasDesk?'i':desk.score>=90?'p':desk.score>=50?'w':'f');
   $('desk-lbl').textContent=!hasDesk?'PageSpeed API not configured':desk.score>=90?'excellent':desk.score>=50?'needs improvement':'scoring poorly';$('desk-lbl').style.color=dc;
   $('desk-tbl').innerHTML=[['First Contentful Paint',desk.fcp],['Speed Index',desk.si],['Largest Contentful Paint',desk.lcp],['Time to Interactive',desk.tti],['Total Blocking Time',desk.tbt],['Cumulative Layout Shift',desk.cls]].map(([l,v])=>`<tr><td>${l}</td><td><strong>${v||'—'}</strong></td></tr>`).join('');
-  $('desk-opp').innerHTML=(desk.opps||[]).length?desk.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--lite);font-style:italic">No major opportunities found</td></tr>';
+  $('desk-opp').innerHTML=(desk.opps||[]).length?desk.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:#d97706">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:#9ca3af;font-style:italic">No major opportunities found</td></tr>';
 
   $('viewport-st').textContent=us.viewport?'correctly specified':'not specified';
   si('ci-iframe',us.iframes?'w':'p');$('iframe-st').textContent=us.iframes?'iFrames detected':'no iFrames detected';$('iframe-body').textContent=us.iframesDesc||'';
@@ -1617,16 +1617,61 @@ function openEmailModal(data, name, email){
 function closeModalAndShowReport(){
   $('email-modal-overlay').classList.remove('open');
   show('page-report');
-  // Load device preview iframes with the audited URL
+  // Load device preview screenshots
   try {
     const auditUrl = D._url || window._lastAuditUrl || '';
     if (auditUrl) {
-      ['mob-iframe','tab-iframe','desk-iframe'].forEach(id => {
-        const f = $(id); if(f) f.src = auditUrl;
-      });
-      const urlBar = $('desk-url-bar'); if(urlBar) urlBar.textContent = auditUrl;
+      const urlBar = $('desk-url-bar');
+      if(urlBar) urlBar.textContent = auditUrl;
+
+      // Use PSI screenshot data if available (from PAGESPEED_API_KEY)
+      const mobShot = D.us?.mob?._screenshot;
+      const deskShot = D.us?.desk?._screenshot;
+
+      // Fallback: use a public screenshot service
+      // thum.io provides free screenshots (no key needed)
+      const enc = encodeURIComponent(auditUrl);
+
+      function loadScreenshot(containerId, shotData, serviceUrl, fallbackMsg) {
+        const el = $(containerId);
+        if (!el) return;
+        if (shotData) {
+          // PSI provides base64 screenshot
+          el.innerHTML = `<img src="data:image/jpeg;base64,${shotData}"
+            style="width:100%;height:100%;object-fit:cover;object-position:top" alt="Screenshot"/>`;
+        } else {
+          // Try screenshot service
+          const img = document.createElement('img');
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;object-position:top';
+          img.alt = 'Site preview';
+          img.onload = () => {};
+          img.onerror = () => {
+            el.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;background:#f9fafb">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+              <div style="font-size:10px;color:#9ca3af;text-align:center">Preview unavailable<br><span style="font-size:9px">(site blocks external loading)</span></div>
+              <a href="${auditUrl}" target="_blank" style="font-size:10px;color:#3b82f6;text-decoration:none">Open site ↗</a>
+            </div>`;
+          };
+          // Use thum.io free screenshot service
+          img.src = `https://image.thum.io/get/width/600/crop/400/${auditUrl}`;
+          el.innerHTML = '';
+          el.appendChild(img);
+        }
+      }
+
+      // Mobile — use portrait crop
+      loadScreenshot('mob-screen', mobShot,
+        `https://image.thum.io/get/width/390/crop/844/${enc}`, 'Mobile preview');
+
+      // Tablet
+      loadScreenshot('tab-screen', null,
+        `https://image.thum.io/get/width/768/crop/600/${enc}`, 'Tablet preview');
+
+      // Desktop
+      loadScreenshot('desk-screen', deskShot,
+        `https://image.thum.io/get/width/1280/crop/800/${enc}`, 'Desktop preview');
     }
-  } catch(e){}
+  } catch(e){ console.warn('Device preview error:', e); }
   window.scrollTo(0,0);
   $('btn-start').disabled=false;
 }
