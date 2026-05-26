@@ -1268,23 +1268,28 @@ function buildReport(D,name,email){
   si('ci-cwv',cwv.pass===true?'p':cwv.pass===false?'f':'i');
   $('cwv-st').textContent=cwv.pass===true?'passed assessment':cwv.pass===false?'failed assessment':'data unavailable — check Search Console';
   $('cwv-adv').textContent=us.cwvAdvice||'';
-  $('cwv-lcp').textContent=cwv.lcp||'N/A';$('cwv-lcp').className='gauge-val '+(lcpV<=2.5?'gv-g':lcpV<=4?'gv-w':'gv-b');
-  $('cwv-inp').textContent=cwv.inp||'N/A';$('cwv-inp').className='gauge-val '+(inpV<=200?'gv-g':inpV<=500?'gv-w':'gv-b');
-  $('cwv-cls').textContent=cwv.cls||'N/A';$('cwv-cls').className='gauge-val '+(clsV<=.1?'gv-g':clsV<=.25?'gv-w':'gv-b');
+  $('cwv-lcp').textContent=cwv.lcp||'N/A';
+  $('cwv-lcp').className='gauge-val '+(isNaN(lcpV)?'':(lcpV<=2.5?'gv-g':lcpV<=4?'gv-w':'gv-b'));
+  $('cwv-inp').textContent=cwv.inp||'N/A';
+  $('cwv-inp').className='gauge-val '+(isNaN(inpV)?'':(inpV<=200?'gv-g':inpV<=500?'gv-w':'gv-b'));
+  $('cwv-cls').textContent=cwv.cls||'N/A';
+  $('cwv-cls').className='gauge-val '+(isNaN(clsV)?'':(clsV<=.1?'gv-g':clsV<=.25?'gv-w':'gv-b'));
 
-  const mob=us.mob||{},mc=mob.score>=90?'var(--green)':mob.score>=50?'var(--warn)':'var(--fail)';
-  $('mob-score').textContent=mob.score||'—';$('mob-score').style.color=mc;$('mob-circle').style.borderColor=mc;
-  si('ci-mob',mob.score>=90?'p':mob.score>=50?'w':'f');
-  $('mob-lbl').textContent=mob.score>=90?'excellent':mob.score>=50?'needs improvement':'scoring poorly';$('mob-lbl').style.color=mc;
+  const mob=us.mob||{},hasMob=mob.score>0;
+  const mc=!hasMob?'var(--lite)':mob.score>=90?'var(--green)':mob.score>=50?'var(--warn)':'var(--fail)';
+  $('mob-score').textContent=hasMob?mob.score:'—';$('mob-score').style.color=mc;$('mob-circle').style.borderColor=mc;
+  si('ci-mob',!hasMob?'i':mob.score>=90?'p':mob.score>=50?'w':'f');
+  $('mob-lbl').textContent=!hasMob?'PageSpeed API not configured':mob.score>=90?'excellent':mob.score>=50?'needs improvement':'scoring poorly';$('mob-lbl').style.color=mc;
   $('mob-tbl').innerHTML=[['First Contentful Paint',mob.fcp],['Speed Index',mob.si],['Largest Contentful Paint',mob.lcp],['Time to Interactive',mob.tti],['Total Blocking Time',mob.tbt],['Cumulative Layout Shift',mob.cls]].map(([l,v])=>`<tr><td>${l}</td><td><strong>${v||'—'}</strong></td></tr>`).join('');
-  $('mob-opp').innerHTML=(mob.opps||[]).map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join('');
+  $('mob-opp').innerHTML=(mob.opps||[]).length?mob.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--lite);font-style:italic">No major opportunities found</td></tr>';
 
-  const desk=us.desk||{},dc=desk.score>=90?'var(--green)':desk.score>=50?'var(--warn)':'var(--fail)';
-  $('desk-score').textContent=desk.score||'—';$('desk-score').style.color=dc;$('desk-circle').style.borderColor=dc;
-  si('ci-desk',desk.score>=90?'p':desk.score>=50?'w':'f');
-  $('desk-lbl').textContent=desk.score>=90?'excellent':desk.score>=50?'needs improvement':'scoring poorly';$('desk-lbl').style.color=dc;
+  const desk=us.desk||{},hasDesk=desk.score>0;
+  const dc=!hasDesk?'var(--lite)':desk.score>=90?'var(--green)':desk.score>=50?'var(--warn)':'var(--fail)';
+  $('desk-score').textContent=hasDesk?desk.score:'—';$('desk-score').style.color=dc;$('desk-circle').style.borderColor=dc;
+  si('ci-desk',!hasDesk?'i':desk.score>=90?'p':desk.score>=50?'w':'f');
+  $('desk-lbl').textContent=!hasDesk?'PageSpeed API not configured':desk.score>=90?'excellent':desk.score>=50?'needs improvement':'scoring poorly';$('desk-lbl').style.color=dc;
   $('desk-tbl').innerHTML=[['First Contentful Paint',desk.fcp],['Speed Index',desk.si],['Largest Contentful Paint',desk.lcp],['Time to Interactive',desk.tti],['Total Blocking Time',desk.tbt],['Cumulative Layout Shift',desk.cls]].map(([l,v])=>`<tr><td>${l}</td><td><strong>${v||'—'}</strong></td></tr>`).join('');
-  $('desk-opp').innerHTML=(desk.opps||[]).map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join('');
+  $('desk-opp').innerHTML=(desk.opps||[]).length?desk.opps.map(o=>`<tr><td>${o.n}</td><td><strong style="color:var(--warn)">${o.s}</strong></td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--lite);font-style:italic">No major opportunities found</td></tr>';
 
   $('viewport-st').textContent=us.viewport?'correctly specified':'not specified';
   si('ci-iframe',us.iframes?'w':'p');$('iframe-st').textContent=us.iframes?'iFrames detected':'no iFrames detected';$('iframe-body').textContent=us.iframesDesc||'';
