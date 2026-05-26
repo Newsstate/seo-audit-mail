@@ -401,6 +401,19 @@ def collect_signals(start_url):
     disallowed, crawl_delay, sitemap_refs = (
         _parse_robots(r_html) if robots_ok else ([], None, []))
 
+    # Check if the audited URL's path is actually blocked (not just any path)
+    audited_path = parsed.path or "/"
+    def _is_blocked(path, rules):
+        """Return True only if the given path matches a Disallow rule."""
+        for rule in rules:
+            if not rule or rule == "/":
+                # Disallow: / blocks everything — but check Allow: first (simplified)
+                return True
+            if path.startswith(rule):
+                return True
+        return False
+    page_is_blocked = _is_blocked(audited_path, disallowed)
+
     # Sitemap
     sitemap_url, sitemap_urls = "", []
     for su in [f"{base}/sitemap_index.xml", f"{base}/sitemap.xml"] + sitemap_refs:
@@ -452,6 +465,7 @@ def collect_signals(start_url):
         "broken": broken, "sub_pages": sub_pages,
         "dup_titles": dup_titles, "thin_pages": thin_pages,
         "robots_ok": robots_ok, "robots_url": robots_url,
+        "page_is_blocked": page_is_blocked,
         "disallowed": disallowed, "crawl_delay": crawl_delay,
         "sitemap_ok": bool(sitemap_url), "sitemap_url": sitemap_url,
         "sitemap_count": len(sitemap_urls),
@@ -623,7 +637,7 @@ def build_report(s, ai):
             "httpsRedir":   s["https_ok"],
             "robots":       s["robots_url"] if s["robots_ok"] else "Not found",
             "robotsOk":     s["robots_ok"],
-            "robotsBlocked": bool(s["disallowed"]),
+            "robotsBlocked": s["page_is_blocked"],
             "disallowedPaths": s["disallowed"][:10],
             "crawlDelay":   s["crawl_delay"],
             "sitemap":      s["sitemap_url"] or "Not found", "sitemapOk": s["sitemap_ok"],
