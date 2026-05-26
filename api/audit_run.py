@@ -548,6 +548,14 @@ def _psi(url, strategy, api_key):
         cls_display = _fmt_cls(cls_num)
         crux_source = False
 
+    # Extract screenshot (PSI provides base64 final screenshot)
+    screenshot_b64 = ""
+    try:
+        ss = audits.get("final-screenshot", {}).get("details", {})
+        screenshot_b64 = ss.get("data", "").replace("data:image/jpeg;base64,", "")
+    except Exception:
+        pass
+
     return {
         "score":     score,
         "fcp":       _fmt_sec(fcp_ms),
@@ -560,7 +568,8 @@ def _psi(url, strategy, api_key):
         "cwv_pass":  cwv_pass,
         "crux":      crux_source,
         "crux_overall": crux_overall or "",
-        "_raw":      data,   # raw PSI response for CrUX extraction
+        "_screenshot": screenshot_b64,
+        "_raw":      data,
     }
 
 
