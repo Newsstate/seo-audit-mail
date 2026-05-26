@@ -290,6 +290,164 @@ def _grade(score):
 
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHROME UX REPORT (CrUX) — extracted from PSI API response (free with PSI key)
+# Falls back to a keyless attempt against the public CrUX endpoint
+# ══════════════════════════════════════════════════════════════════════════════
+
+def fetch_crux(url, psi_data=None):
+    """
+    Extract real-user CrUX field data.
+
+    Priority:
+      1. If PSI was already called, parse loadingExperience from that response
+      2. Try CrUX API with PAGESPEED_API_KEY (same key, free quota)
+      3. Return None — no data available
+
+    Metrics (75th percentile, real Chrome users):
+      lcp, inp, cls, fcp, ttfb — with FAST/MODERATE/SLOW ratings
+    """
+    def _fmt_ms(v):
+        if v is None: return "N/A"
+        return f"{v/1000:.2f}s" if v >= 1000 else f"{int(v)}ms"
+
+    def _fmt_cls(v):
+        if v is None: return "N/A"
+        return f"{float(v):.3f}"
+
+    def _rating(key, val):
+        thresholds = {
+            "lcp":  (2500, 4000),
+            "inp":  (200,  500),
+            "cls":  (0.1,  0.25),
+            "fcp":  (1800, 3000),
+            "ttfb": (800,  1800),
+        }
+        if val is None: return ""
+        good, poor = thresholds.get(key, (0, 0))
+        if val <= good: return "FAST"
+        if val >= poor: return "SLOW"
+        return "MODERATE"
+
+    def _parse_le(le, source):
+        """Parse a loadingExperience block from PSI response."""
+        metrics = le.get("metrics", {})
+        if not metrics:
+            return None
+
+        def _p75(key):
+            return metrics.get(key, {}).get("percentile")
+
+        lcp_ms  = _p75("LARGEST_CONTENTFUL_PAINT_MS")
+        inp_ms  = _p75("INTERACTION_TO_NEXT_PAINT")
+        cls_raw = _p75("CUMULATIVE_LAYOUT_SHIFT_SCORE")
+        fcp_ms  = _p75("FIRST_CONTENTFUL_PAINT_MS")
+        ttfb_ms = _p75("EXPERIMENTAL_TIME_TO_FIRST_BYTE")
+
+        cls_score = (cls_raw / 100) if (cls_raw and cls_raw > 1) else cls_raw
+
+        cwv_pass = (
+            lcp_ms  is not None and lcp_ms  <= 2500 and
+            (inp_ms is None     or  inp_ms  <= 200) and
+            cls_score is not None and cls_score <= 0.1
+        )
+
+        return {
+            "lcp":         _fmt_ms(lcp_ms),
+            "inp":         _fmt_ms(inp_ms),
+            "cls":         _fmt_cls(cls_score),
+            "fcp":         _fmt_ms(fcp_ms),
+            "ttfb":        _fmt_ms(ttfb_ms),
+            "lcp_rating":  _rating("lcp",  lcp_ms),
+            "inp_rating":  _rating("inp",  inp_ms),
+            "cls_rating":  _rating("cls",  cls_score),
+            "fcp_rating":  _rating("fcp",  fcp_ms),
+            "ttfb_rating": _rating("ttfb", ttfb_ms),
+            "pass":        cwv_pass,
+            "source":      source,
+            "has_data":    True,
+        }
+
+    # ── Path 1: reuse PSI data already fetched ──
+    if psi_data:
+        le = psi_data.get("loadingExperience", {})
+        if le.get("metrics"):
+            src_type = "url" if le.get("id","").rstrip("/") == url.rstrip("/") else "origin"
+            parsed = _parse_le(le, src_type)
+            if parsed:
+                return parsed
+        # Try originLoadingExperience as fallback
+        ole = psi_data.get("originLoadingExperience", {})
+        if ole.get("metrics"):
+            parsed = _parse_le(ole, "origin")
+            if parsed:
+                return parsed
+
+    # ── Path 2: CrUX API with PSI key ──
+    api_key = os.environ.get("PAGESPEED_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    parsed_url = urlparse(url)
+    origin     = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+    for payload, source in [
+        ({"url": url,       "formFactor": "PHONE"},   "url"),
+        ({"origin": origin, "formFactor": "PHONE"},   "origin"),
+        ({"origin": origin},                           "origin"),
+    ]:
+        try:
+            endpoint = f"https://chromeuxreport.googleapis.com/v1/records:queryRecord?key={api_key}"
+            data_b   = json.dumps(payload).encode()
+            req      = urllib.request.Request(
+                endpoint, data=data_b,
+                headers={"Content-Type": "application/json", "User-Agent": UA},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                resp = json.loads(r.read())
+            if "record" not in resp:
+                continue
+
+            # CrUX API uses different key names
+            def _crux_p75(key):
+                m = resp["record"].get("metrics", {}).get(key, {})
+                return m.get("percentiles", {}).get("p75")
+
+            lcp_ms  = _crux_p75("largest_contentful_paint")
+            inp_ms  = _crux_p75("interaction_to_next_paint")
+            cls_raw = _crux_p75("cumulative_layout_shift")
+            fcp_ms  = _crux_p75("first_contentful_paint")
+            ttfb_ms = _crux_p75("experimental_time_to_first_byte")
+            cls_score = (cls_raw / 100) if (cls_raw and cls_raw > 1) else cls_raw
+
+            cwv_pass = (
+                lcp_ms  is not None and lcp_ms  <= 2500 and
+                (inp_ms is None     or  inp_ms  <= 200) and
+                cls_score is not None and cls_score <= 0.1
+            )
+
+            return {
+                "lcp":         _fmt_ms(lcp_ms),
+                "inp":         _fmt_ms(inp_ms),
+                "cls":         _fmt_cls(cls_score),
+                "fcp":         _fmt_ms(fcp_ms),
+                "ttfb":        _fmt_ms(ttfb_ms),
+                "lcp_rating":  _rating("lcp",  lcp_ms),
+                "inp_rating":  _rating("inp",  inp_ms),
+                "cls_rating":  _rating("cls",  cls_score),
+                "fcp_rating":  _rating("fcp",  fcp_ms),
+                "ttfb_rating": _rating("ttfb", ttfb_ms),
+                "pass":        cwv_pass,
+                "source":      source,
+                "has_data":    True,
+            }
+        except Exception:
+            continue
+
+    return None
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGESPEED INSIGHTS API
 # ══════════════════════════════════════════════════════════════════════════════
@@ -402,6 +560,7 @@ def _psi(url, strategy, api_key):
         "cwv_pass":  cwv_pass,
         "crux":      crux_source,
         "crux_overall": crux_overall or "",
+        "_raw":      data,   # raw PSI response for CrUX extraction
     }
 
 
@@ -757,7 +916,41 @@ Sort recommendations by SEO impact (critical issues first). Only include real is
 # LAYER 4 — ASSEMBLE REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_report(s, ai, mob_psi=None, desk_psi=None, cwv_psi=None):
+
+def _build_cwv_advice(cwv_psi, crux_data):
+    """Build a human-readable CWV advice string from available data."""
+    if not cwv_psi and not crux_data:
+        return "Core Web Vitals require real-user data. No CrUX data available for this domain yet — it may be too new or have low traffic."
+
+    c = crux_data or cwv_psi or {}
+    source = c.get("source", "")
+    origin_note = " (origin-level data — URL-level not available)" if "origin" in source else ""
+
+    parts = []
+    if c.get("lcp") and c["lcp"] != "N/A":
+        rating = c.get("lcp_rating", "")
+        col = "✓" if rating == "FAST" else ("⚠" if rating == "MODERATE" else "✕")
+        parts.append(f"LCP: {c['lcp']} {col}")
+    if c.get("inp") and c["inp"] != "N/A":
+        rating = c.get("inp_rating", "")
+        col = "✓" if rating == "FAST" else ("⚠" if rating == "MODERATE" else "✕")
+        parts.append(f"INP: {c['inp']} {col}")
+    if c.get("cls") and c["cls"] != "N/A":
+        rating = c.get("cls_rating", "")
+        col = "✓" if rating == "FAST" else ("⚠" if rating == "MODERATE" else "✕")
+        parts.append(f"CLS: {c['cls']} {col}")
+    if c.get("fcp") and c["fcp"] != "N/A":
+        parts.append(f"FCP: {c['fcp']}")
+    if c.get("ttfb") and c["ttfb"] != "N/A":
+        parts.append(f"TTFB: {c['ttfb']}")
+
+    verdict = "✓ Passed" if cwv_psi and cwv_psi.get("pass") else "✕ Failed"
+    metrics_str = "  |  ".join(parts) if parts else "No metrics available"
+    source_str = "Real-user field data from Chrome UX Report" + origin_note
+
+    return f"{verdict} — {metrics_str}. {source_str}."
+
+def build_report(s, ai, mob_psi=None, desk_psi=None, cwv_psi=None, crux_data=None):
     def _a(key, fb=""):
         return (ai or {}).get(key, fb) if ai else fb
 
@@ -894,12 +1087,8 @@ def build_report(s, ai, mob_psi=None, desk_psi=None, cwv_psi=None):
         },
         "us": {
             "cwv": cwv_psi if cwv_psi else {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": None},
-            "cwvAdvice": (
-                "Core Web Vitals measured from real user data (CrUX). "
-                f"LCP: {cwv_psi['lcp']}, CLS: {cwv_psi['cls']}."
-                if cwv_psi and cwv_psi.get("pass") is not None
-                else "Core Web Vitals data requires the PageSpeed Insights API. Check Google Search Console for real CWV data."
-            ),
+            "crux": crux_data if crux_data else {},
+            "cwvAdvice": _build_cwv_advice(cwv_psi, crux_data),
             "mob": mob_psi if mob_psi else {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
                             "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
             "desk": desk_psi if desk_psi else {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
@@ -1026,9 +1215,31 @@ class handler(BaseHTTPRequestHandler):
             stored = store_get(job_id)
 
             signals  = collect_signals(url)       # Layer 1+2: deep crawl
-            mob_psi, desk_psi, cwv_psi = fetch_pagespeed(url)  # PageSpeed API
+
+            # CrUX (free, always) + PSI (if key set) — run in parallel
+            mob_psi, desk_psi, cwv_psi = fetch_pagespeed(url)  # PageSpeed API (optional)
+
+            # CrUX: extract from PSI response (free) or call CrUX API separately
+            mob_raw = (mob_psi or {}).get("_raw")
+            crux_data = fetch_crux(url, psi_data=mob_raw)
+
+            # Merge: PSI CWV takes priority if available, else use CrUX
+            if cwv_psi is None and crux_data:
+                cwv_psi = {
+                    "lcp":  crux_data["lcp"],
+                    "inp":  crux_data["inp"],
+                    "cls":  crux_data["cls"],
+                    "fcp":  crux_data["fcp"],
+                    "ttfb": crux_data["ttfb"],
+                    "pass": crux_data["pass"],
+                    "source": crux_data["source"],
+                    "lcp_rating":  crux_data.get("lcp_rating", ""),
+                    "inp_rating":  crux_data.get("inp_rating", ""),
+                    "cls_rating":  crux_data.get("cls_rating", ""),
+                }
+
             ai_prose = ai_explain(signals)         # Layer 3: AI explanations
-            report   = build_report(signals, ai_prose, mob_psi, desk_psi, cwv_psi)  # Layer 4
+            report   = build_report(signals, ai_prose, mob_psi, desk_psi, cwv_psi, crux_data)  # Layer 4
 
             store_set(job_id, {
                 "status": "done",
