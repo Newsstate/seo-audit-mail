@@ -1149,13 +1149,13 @@ function buildReport(D,name,email){
   $('serp-title').textContent=op.serpTitle||(op.title?.t||'').substring(0,57);
   $('serp-desc').textContent=op.serpDesc||(op.meta?.t||'').substring(0,155)+'...';
 
-  const ttOk=op.title?.ok!==false&&op.title?.len>=45&&op.title?.len<=65;
+  const ttOk=op.title?.ok===true;
   si('ci-tt',ttOk?'p':op.title?.len>0?'w':'f');
   $('tt-st').textContent=(ttOk?'optimal':'adjust needed')+' — '+(op.title?.len||0)+' characters';
   $('tt-val').textContent=op.title?.t||'Not found';
   $('tt-body').textContent=op.titleAdvice||(ttOk?'Title length is optimal (50–60 chars).':'Shorten title to 50–60 characters for best SERP display.');
 
-  const mtOk=op.meta?.ok!==false&&op.meta?.len>=120&&op.meta?.len<=165;
+  const mtOk=op.meta?.ok===true;
   si('ci-meta',mtOk?'p':op.meta?.len>0?'w':'f');
   $('meta-st').textContent=(mtOk?'optimal':'adjust needed')+' — '+(op.meta?.len||0)+' characters';
   $('meta-val').textContent=op.meta?.t||'Not found';
@@ -1184,7 +1184,7 @@ function buildReport(D,name,email){
   $('kw-body').innerHTML=(op.kws||[]).map(k=>`<tr><td><strong>${k.p}</strong></td><td style="text-align:center">${tick(k.ti)}</td><td style="text-align:center">${tick(k.me)}</td><td style="text-align:center">${tick(k.hd)}</td><td style="text-align:center;font-weight:600">${k.f||'—'}</td></tr>`).join('');
 
   // Word count
-  const wc=op.wc||0,wcOk=op.wcOk!==false&&wc>=500;
+  const wc=op.wc||0,wcOk=op.wcOk===true;
   si('ci-wc',wcOk?'p':'w');
   $('wc-st').textContent=wc.toLocaleString()+' words — '+(wcOk?'good level of content':'below recommended minimum');
   $('wc-body').textContent='Word Count: '+wc.toLocaleString()+'. '+(wcOk?'Sufficient content to aid ranking potential.':'Add more content — aim for at least 500 words on key pages.');
@@ -1265,8 +1265,8 @@ function buildReport(D,name,email){
 
   const cwv=us.cwv||{};
   const lcpV=parseFloat(cwv.lcp),inpV=parseFloat(cwv.inp),clsV=parseFloat(cwv.cls);
-  si('ci-cwv',cwv.pass?'p':'f');
-  $('cwv-st').textContent=cwv.pass?'passed assessment':'failed assessment';
+  si('ci-cwv',cwv.pass===true?'p':cwv.pass===false?'f':'i');
+  $('cwv-st').textContent=cwv.pass===true?'passed assessment':cwv.pass===false?'failed assessment':'data unavailable — check Search Console';
   $('cwv-adv').textContent=us.cwvAdvice||'';
   $('cwv-lcp').textContent=cwv.lcp||'N/A';$('cwv-lcp').className='gauge-val '+(lcpV<=2.5?'gv-g':lcpV<=4?'gv-w':'gv-b');
   $('cwv-inp').textContent=cwv.inp||'N/A';$('cwv-inp').className='gauge-val '+(inpV<=200?'gv-g':inpV<=500?'gv-w':'gv-b');
