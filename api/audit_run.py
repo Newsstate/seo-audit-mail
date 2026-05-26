@@ -1,11 +1,18 @@
 """
-/api/audit_run
-PRIMARY:  Claude AI with web_search (full AI-powered analysis)
-FALLBACK: Direct HTTP scraping via urllib — no AI key needed.
-Triggers fallback when: API key missing, credits exhausted, any Anthropic error.
+/api/audit_run  — Deep Crawler + AI Explainer
+Architecture:
+  1. CRAWL  — fetch homepage + up to 5 internal pages, robots.txt, sitemap,
+               HTTP headers, DNS/SPF/DMARC records, all via urllib (no browser)
+  2. COLLECT — extract every SEO signal from raw HTML/headers/DNS
+  3. EXPLAIN — send the raw signals to Claude; AI writes issue explanations
+               and prioritised recommendations (no searching, no hallucination)
+  4. STORE   — merge crawler data + AI prose into the Redis job record
 """
-import json, os, re, urllib.request, urllib.parse, urllib.error, threading
+
+import json, os, re, threading, time
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, urljoin
+import urllib.request, urllib.error
 
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
@@ -34,176 +41,50 @@ def store_get(job_id):
     return json.loads(v) if v else {}
 
 
-# ── Claude AI audit ───────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# LAYER 1 — DEEP CRAWLER
+# ══════════════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """You are a world-class SEO auditor. Use the web_search tool MULTIPLE TIMES to research every aspect of the site, then return ONE JSON object only — no markdown, no backticks, no text outside the JSON.
+UA = "Mozilla/5.0 (compatible; DeepSEOBot/2.0)"
+MAX_PAGES     = 6
+FETCH_TIMEOUT = 10
 
-RESEARCH STEPS — do ALL:
-1. Fetch the main URL — read title, meta description, H1-H6 tags, keyword frequency, word count, canonical, lang attribute, schema markup, Open Graph tags, Twitter Cards, iframes, favicon
-2. Check robots.txt at domain/robots.txt
-3. Check sitemap at domain/sitemap.xml and domain/sitemap_index.xml
-4. Search "{domain} PageSpeed Insights mobile desktop score"
-5. Search "{domain} Core Web Vitals LCP CLS INP"
-6. Search "{domain} Facebook Instagram LinkedIn Twitter YouTube" for social profiles
-7. Search "{domain} Google Business Profile reviews rating"
-8. Search "{domain} DMARC record" and "{domain} SPF record"
-9. Search "{domain} technology stack" to identify CMS, CDN, analytics
-10. Check domain/llms.txt
-11. Search "{domain} organic keyword rankings traffic"
-12. Search "{domain} hreflang"
-
-Return ONLY this exact JSON (fill every field with real discovered data):
-
-{
-  "domain": "example.com",
-  "overall": {"grade": "A", "summary": "One specific sentence about this site's SEO health"},
-  "cats": [
-    {"k":"op",  "grade":"A+","lbl":"On-Page SEO","c":"#7F77DD"},
-    {"k":"geo", "grade":"A", "lbl":"GEO / AI",   "c":"#1e8449"},
-    {"k":"us",  "grade":"B-","lbl":"Usability",  "c":"#c0392b"},
-    {"k":"pf",  "grade":"A-","lbl":"Performance","c":"#2980b9"}
-  ],
-  "op": {
-    "title":{"t":"Actual title text","len":76,"ok":false},
-    "titleAdvice":"Specific advice.",
-    "meta":{"t":"Actual meta text","len":160,"ok":true},
-    "metaAdvice":"Specific meta advice.",
-    "serpUrl":"https://example.com",
-    "serpTitle":"Title up to 57 chars",
-    "serpDesc":"Meta up to 155 chars...",
-    "h1":[{"tag":"H1","v":"Actual H1 text"}],
-    "h1Count":1,"h1Status":"good",
-    "hfreq":[{"t":"H2","n":12},{"t":"H3","n":24},{"t":"H4","n":7}],
-    "kws":[{"p":"keyword","ti":true,"me":true,"hd":true,"f":35}],
-    "wc":2118,"wcOk":true,
-    "imgAlt":true,"imgAltDesc":"All images have alt attributes.",
-    "canon":"https://example.com/","canonOk":true,
-    "noindex":false,"noindexOk":true,"noindexHeader":false,
-    "httpsRedir":true,
-    "robots":"https://example.com/robots.txt","robotsOk":true,"robotsBlocked":false,
-    "sitemap":"https://example.com/sitemap_index.xml","sitemapOk":true,
-    "analytics":true,"analyticsTools":["Google Analytics"],
-    "schema":true,"schemaTypes":["LocalBusiness","WebPage"],
-    "lang":"en","langOk":true,
-    "hreflang":false,"hreflangDesc":"No hreflang tags found.",
-    "amp":false,"ampDesc":"AMP not enabled.","flash":false
-  },
-  "geo": {
-    "renderPct":"18%","renderOk":true,"renderDesc":"Low render % good for LLMs.",
-    "llmsTxt":true,"llmsTxtUrl":"https://example.com/llms.txt","llmsDesc":"llms.txt found.",
-    "traffic":{"org":107,"paid":0,"ai":0},
-    "kws":[{"kw":"brand","co":"IN","pos":1,"vol":90,"tr":27}],
-    "positions":[{"r":"Position 1","n":2},{"r":"Position 2-3","n":0},{"r":"Position 4-10","n":0},{"r":"Position 11-20","n":0},{"r":"Position 21-30","n":0},{"r":"Position 31-100","n":3}]
-  },
-  "us": {
-    "cwv":{"lcp":"3.3s","inp":"164ms","cls":"0.00","pass":true},
-    "cwvAdvice":"CWV pass.",
-    "mob":{"score":35,"fcp":"9.5s","si":"9.5s","lcp":"16.3s","tti":"17.3s","tbt":"0.46s","cls":"0","opps":[{"n":"Reduce unused JS","s":"4.84s"}]},
-    "desk":{"score":68,"fcp":"0.8s","si":"1.0s","lcp":"1.1s","tti":"3.9s","tbt":"0.65s","cls":"0.046","opps":[{"n":"Avoid redirects","s":"0.19s"}]},
-    "viewport":true,"iframes":false,"iframesDesc":"No iFrames.",
-    "fontSizes":true,"tapTargets":true,"favicon":true,"emailPrivacy":true,"flash":false
-  },
-  "pf": {
-    "speed":{"srv":"0.0s","cnt":"4.3s","scr":"7.6s","ok":true},
-    "size":{"tot":"2.00MB","html":"0.13MB","css":"0.11MB","js":"1.2MB","img":"0.34MB","other":"0.22MB","ok":true},
-    "comp":{"rate":"64%","html":"61%","css":"74%","js":"72%","img":"0%","other":"0%","ok":true},
-    "http2":true,"imgOpt":true,"minify":false,"minifyDesc":"Some files not minified.",
-    "jsErrors":false,"jsErrDesc":"","inlineStyles":false,"inlineDesc":"","depHtml":false,
-    "res":{"tot":106,"html":5,"js":32,"css":20,"img":34,"other":15}
-  },
-  "social":[
-    {"name":"Facebook","url":"https://facebook.com/page","ico":"F","bg":"#1877F2","c":"#fff","linked":true,"stat":""},
-    {"name":"Instagram","url":"https://instagram.com/page","ico":"Ig","bg":"#E1306C","c":"#fff","linked":true,"stat":""},
-    {"name":"LinkedIn","url":"https://linkedin.com/company/x","ico":"in","bg":"#0A66C2","c":"#fff","linked":true,"stat":""},
-    {"name":"X/Twitter","url":"https://x.com/handle","ico":"X","bg":"#000","c":"#fff","linked":true,"stat":""},
-    {"name":"YouTube","url":"https://youtube.com/channel/x","ico":"▶","bg":"#FF0000","c":"#fff","linked":true,"stat":""}
-  ],
-  "fbPixel":"835561506088336","fbPixelOk":true,
-  "ogTags":[{"t":"og:title","v":"Title"},{"t":"og:description","v":"Desc"},{"t":"og:image","v":"https://example.com/img.jpg"}],
-  "twitterCard":true,
-  "twitterTags":[{"t":"twitter:card","v":"summary_large_image"},{"t":"twitter:title","v":"Title"}],
-  "local":{
-    "hasAddress":true,"phone":"+91 99715 44461","addr":"Full address",
-    "localSchema":true,"schemaType":"LocalBusiness",
-    "gbp":{"found":true,"name":"Business","addr":"Address","phone":"+91 99717 44661","site":"https://example.com/"},
-    "reviews":{"rating":4.7,"count":52,"dist":[45,4,0,2,1]}
-  },
-  "tech":{
-    "list":[{"name":"WordPress","ver":""},{"name":"Cloudflare","ver":""}],
-    "dmarc":false,"dmarcDesc":"No DMARC record.",
-    "spf":true,"spfRecord":"v=spf1 include:_spf.google.com ~all",
-    "server":"cloudflare","serverIp":"162.159.137.54","charset":"UTF-8","http2":true,"http3":false
-  },
-  "recommendations":[
-    {"priority":1,"title":"Issue","detail":"Specific advice."},
-    {"priority":2,"title":"Issue","detail":"Specific advice."},
-    {"priority":3,"title":"Issue","detail":"Specific advice."}
-  ]
-}
-IMPORTANT: Use REAL values. Return JSON ONLY."""
-
-
-def run_claude_audit(url):
-    """Try Claude AI audit. Raises on any failure."""
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    client = anthropic.Anthropic(api_key=api_key)
-    resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8000,
-        system=SYSTEM_PROMPT,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
-        messages=[{"role": "user", "content": (
-            f"Run a full SEO audit on: {url}\n\n"
-            "Use web_search many times. Return ONLY the JSON report."
-        )}]
-    )
-    raw   = "".join(b.text for b in resp.content if b.type == "text")
-    match = re.search(r'\{[\s\S]*\}', raw)
-    if not match:
-        raise ValueError("No JSON found in AI response")
-    return json.loads(match.group(0))
-
-
-# ── Fallback scraper ──────────────────────────────────────────────────────────
-
-UA = "Mozilla/5.0 (compatible; SEOAuditBot/1.0)"
-
-def fetch(url, timeout=8):
+def _fetch(url, timeout=FETCH_TIMEOUT, method="GET"):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers={"User-Agent": UA}, method=method)
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode("utf-8", errors="replace"), r.url, r.status
+            hdrs = {k.lower(): v for k, v in r.headers.items()}
+            body = r.read().decode("utf-8", errors="replace")
+            return body, r.url, r.status, hdrs
     except urllib.error.HTTPError as e:
-        return "", url, e.code
+        return "", url, e.code, {}
     except Exception:
-        return "", url, 0
+        return "", url, 0, {}
 
-def head_ok(url, timeout=4):
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA}, method="HEAD")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status < 400
-    except Exception:
-        return False
+def _head(url, timeout=5):
+    _, final, status, hdrs = _fetch(url, timeout=timeout, method="HEAD")
+    return status, hdrs
 
-def check_parallel(urls, timeout=4):
-    """Check multiple URLs in parallel. Returns dict url->bool."""
+def _parallel_head(urls, timeout=5):
     results = {}
     lock = threading.Lock()
     def _chk(u):
-        ok = head_ok(u, timeout=timeout)
+        st, hdrs = _head(u, timeout)
         with lock:
-            results[u] = ok
+            results[u] = {"ok": 0 < st < 400, "status": st, "headers": hdrs}
     threads = [threading.Thread(target=_chk, args=(u,)) for u in urls]
     for t in threads: t.daemon = True; t.start()
-    for t in threads: t.join(timeout=timeout + 1)
+    for t in threads: t.join(timeout + 1)
     return results
 
-def gmeta(html, name):
+
+# ── HTML helpers ──────────────────────────────────────────────────────────────
+
+def _tag_text(html, tag):
+    m = re.search(rf'<{tag}[^>]*>(.*?)</{tag}>', html, re.I | re.S)
+    return re.sub(r'<[^>]+>', '', m.group(1)).strip() if m else ""
+
+def _meta(html, name):
     for p in [
         rf'<meta\s+name=["\']?{re.escape(name)}["\']?\s+content=["\']([^"\']*)["\']',
         rf'<meta\s+content=["\']([^"\']*)["\']?\s+name=["\']?{re.escape(name)}["\']?',
@@ -212,7 +93,7 @@ def gmeta(html, name):
         if m: return m.group(1).strip()
     return ""
 
-def gog(html, prop):
+def _og(html, prop):
     for p in [
         rf'<meta\s+property=["\']?og:{re.escape(prop)}["\']?\s+content=["\']([^"\']*)["\']',
         rf'<meta\s+content=["\']([^"\']*)["\']?\s+property=["\']?og:{re.escape(prop)}["\']?',
@@ -221,7 +102,7 @@ def gog(html, prop):
         if m: return m.group(1).strip()
     return ""
 
-def gtw(html, name):
+def _twitter(html, name):
     for p in [
         rf'<meta\s+name=["\']?twitter:{re.escape(name)}["\']?\s+content=["\']([^"\']*)["\']',
         rf'<meta\s+content=["\']([^"\']*)["\']?\s+name=["\']?twitter:{re.escape(name)}["\']?',
@@ -230,315 +111,669 @@ def gtw(html, name):
         if m: return m.group(1).strip()
     return ""
 
-def word_count(html):
-    t = re.sub(r'<[^>]+>', ' ', html)
-    return len(re.sub(r'\s+', ' ', t).split())
+def _strip(html):
+    return re.sub(r'<[^>]+>', ' ', html)
 
-def top_kws(html, title, meta):
-    text  = re.sub(r'<[^>]+>', ' ', html).lower()
+def _wc(html):
+    return len(re.sub(r'\s+', ' ', _strip(html)).split())
+
+def _headings(html):
+    result = {}
+    for i in range(1, 7):
+        tags = re.findall(rf'<h{i}[^>]*>(.*?)</h{i}>', html, re.I | re.S)
+        result[f"h{i}"] = [re.sub(r'<[^>]+>', '', t).strip() for t in tags]
+    return result
+
+def _canonical(html):
+    m = re.search(r'<link[^>]*rel=["\']?canonical["\']?[^>]*href=["\']([^"\']+)["\']', html, re.I)
+    return m.group(1).strip() if m else ""
+
+def _schema_types(html):
+    return list(set(re.findall(r'"@type"\s*:\s*"([^"]+)"', html)))
+
+def _all_links(html, base):
+    hrefs = re.findall(r'<a[^>]+href=["\']([^"\'#?][^"\']*)["\']', html, re.I)
+    out = []
+    for h in hrefs:
+        try:
+            full = urljoin(base, h)
+            if full.startswith("http"):
+                out.append(full)
+        except Exception:
+            pass
+    return list(dict.fromkeys(out))
+
+def _internal(links, netloc):
+    return [l for l in links if urlparse(l).netloc == netloc]
+
+def _images(html):
+    return re.findall(r'<img[^>]+>', html, re.I)
+
+def _missing_alt(imgs):
+    return [i for i in imgs if not re.search(r'\balt\s*=\s*["\'][^"\']{1,}["\']', i, re.I)]
+
+def _tech(html, headers):
+    checks = [
+        ("WordPress",      r'wp-content|wp-includes'),
+        ("Shopify",        r'cdn\.shopify\.com'),
+        ("Wix",            r'wix\.com|wixstatic\.com'),
+        ("Webflow",        r'webflow\.com'),
+        ("Next.js",        r'__NEXT_DATA__|/_next/'),
+        ("Nuxt.js",        r'__nuxt|/_nuxt/'),
+        ("React",          r'react\.production|data-reactroot'),
+        ("Vue.js",         r'__vue__'),
+        ("Angular",        r'ng-version'),
+        ("jQuery",         r'jquery\.min\.js|jquery-\d'),
+        ("Bootstrap",      r'bootstrap\.min\.(css|js)'),
+        ("Tailwind CSS",   r'tailwindcss'),
+        ("Cloudflare",     r'__cf_bm'),
+        ("Google Analytics", r'google-analytics\.com|gtag\(|G-[A-Z0-9]{6,}'),
+        ("Google Tag Manager", r'googletagmanager\.com'),
+        ("Facebook Pixel", r"fbq\(|facebook\.com/tr"),
+        ("HubSpot",        r'hs-scripts'),
+        ("Hotjar",         r'hotjar\.com'),
+        ("Django",         r'csrfmiddlewaretoken'),
+        ("AMP",            r'<html[^>]*\bamp\b'),
+    ]
+    server = headers.get("server", "").lower()
+    found = []
+    if "nginx"  in server: found.append("Nginx")
+    if "apache" in server: found.append("Apache")
+    for name, pat in checks:
+        if re.search(pat, html, re.I):
+            found.append(name)
+    return list(dict.fromkeys(found))
+
+STOP = {
+    'the','a','an','and','or','but','in','on','at','to','for','of','with',
+    'is','are','was','were','be','been','this','that','it','by','from','as',
+    'into','about','which','have','has','had','not','do','does','did','we',
+    'you','your','our','more','can','will','get','all','any','its','use',
+    'also','so','if','than','then','up','out','no','my','he','she','they',
+    'their','us','page','click','here','read','view','learn','find',
+}
+
+def _top_kws(html, title, meta, n=8):
+    text  = _strip(html).lower()
     words = re.sub(r'[^\w\s]', '', text).split()
-    stop  = {'the','a','an','and','or','but','in','on','at','to','for','of','with',
-             'is','are','was','were','be','been','this','that','it','by','from','as',
-             'into','about','which','have','has','had','not','do','does','did','we',
-             'you','your','our','more','can','will','get','all','any','its','use'}
-    words = [w for w in words if len(w) > 3 and w not in stop]
+    words = [w for w in words if len(w) > 3 and w not in STOP]
     freq  = {}
-    for w in words:
-        freq[w] = freq.get(w, 0) + 1
-    top = sorted(freq.items(), key=lambda x: -x[1])[:6]
+    for w in words: freq[w] = freq.get(w, 0) + 1
+    top = sorted(freq.items(), key=lambda x: -x[1])[:n]
+    hdg  = " ".join(re.sub(r'<[^>]+>', '', h).lower()
+                    for h in re.findall(r'<h[1-6][^>]*>.*?</h[1-6]>', html, re.I | re.S))
     return [{"p": kw, "ti": kw in title.lower(), "me": kw in meta.lower(),
-             "hd": bool(re.search(rf'<h[1-6][^>]*>[^<]*{re.escape(kw)}', html, re.I)),
-             "f": f} for kw, f in top]
+             "hd": kw in hdg, "f": f} for kw, f in top]
 
-def to_grade(score):
-    for t, g in [(92,"A+"),(87,"A"),(82,"A-"),(77,"B+"),(72,"B"),(67,"B-"),
+def _social(html):
+    links = re.findall(r'href=["\']([^"\']+)["\']', html, re.I)
+    nets  = [
+        ("Facebook",  "facebook.com",  "F",  "#1877F2"),
+        ("Instagram", "instagram.com", "Ig", "#E1306C"),
+        ("LinkedIn",  "linkedin.com",  "in", "#0A66C2"),
+        ("X/Twitter", "x.com",         "X",  "#000000"),
+        ("YouTube",   "youtube.com",   "▶",  "#FF0000"),
+        ("Pinterest", "pinterest.com", "P",  "#E60023"),
+        ("TikTok",    "tiktok.com",    "Tt", "#000000"),
+    ]
+    return [{"name": n, "url": next((l for l in links if d in l), ""),
+             "ico": ic, "bg": bg, "c": "#fff",
+             "linked": any(d in l for l in links), "stat": ""}
+            for n, d, ic, bg in nets]
+
+def _dns_txt(domain):
+    try:
+        api = f"https://dns.google/resolve?name={domain}&type=TXT"
+        req = urllib.request.Request(api, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        return [a.get("data","").strip('"').replace('" "','')
+                for a in data.get("Answer", [])]
+    except Exception:
+        return []
+
+def _spf(records):
+    for r in records:
+        if r.startswith("v=spf1"): return True, r
+    return False, ""
+
+def _dmarc(domain):
+    records = _dns_txt(f"_dmarc.{domain}")
+    for r in records:
+        if "v=DMARC1" in r: return True, r
+    return False, ""
+
+def _parse_robots(txt):
+    dis, delay, smaps = [], None, []
+    for line in txt.splitlines():
+        l = line.strip()
+        if l.lower().startswith("disallow:"):
+            v = l[9:].strip()
+            if v: dis.append(v)
+        elif l.lower().startswith("crawl-delay:"):
+            try: delay = float(l[12:].strip())
+            except: pass
+        elif l.lower().startswith("sitemap:"):
+            smaps.append(l[8:].strip())
+    return dis, delay, smaps
+
+def _parse_sitemap(xml):
+    return re.findall(r'<loc>\s*(https?://[^<]+?)\s*</loc>', xml, re.I)[:200]
+
+def _grade(score):
+    for t, g in [(93,"A+"),(87,"A"),(82,"A-"),(77,"B+"),(72,"B"),(67,"B-"),
                  (60,"C+"),(53,"C"),(45,"C-"),(35,"D+"),(25,"D"),(15,"D-")]:
         if score >= t: return g
     return "F"
 
-def run_fallback_audit(url):
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LAYER 2 — COLLECT ALL SIGNALS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def collect_signals(start_url):
+    parsed = urlparse(start_url)
     domain = parsed.netloc.replace("www.", "")
     base   = f"{parsed.scheme}://{parsed.netloc}"
 
-    html, final_url, _ = fetch(url)
-    https_ok = final_url.startswith("https://")
+    # Fetch homepage
+    t0 = time.time()
+    html, final_url, status, headers = _fetch(start_url)
+    ttfb = round(time.time() - t0, 3)
 
-    # Title
-    tm = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
-    title_t   = re.sub(r'\s+', ' ', tm.group(1)).strip() if tm else ""
+    https_ok   = final_url.startswith("https://")
+    redirected = final_url.rstrip("/") != start_url.rstrip("/")
+
+    # Title / meta
+    title_t   = _tag_text(html, "title")
     title_len = len(title_t)
     title_ok  = 45 <= title_len <= 65
 
-    # Meta
-    meta_t   = gmeta(html, "description")
+    meta_t   = _meta(html, "description")
     meta_len = len(meta_t)
     meta_ok  = 120 <= meta_len <= 165
 
-    # Canonical / lang / noindex
-    cm    = re.search(r'<link[^>]*rel=["\']canonical["\'][^>]*href=["\']([^"\']+)["\']', html, re.I)
-    canon = cm.group(1).strip() if cm else ""
-    lm    = re.search(r'<html[^>]*lang=["\']([^"\']+)["\']', html, re.I)
-    lang  = lm.group(1).strip() if lm else ""
-    noindex = bool(re.search(r'<meta[^>]*name=["\']robots["\'][^>]*content=["\'][^"\']*noindex', html, re.I))
+    # Headings
+    headings  = _headings(html)
+    h1s       = headings.get("h1", [])
+    h1_count  = len(h1s)
+    h1_status = "good" if h1_count == 1 else ("multiple" if h1_count > 1 else "missing")
+    hfreq     = [{"t": f"H{i}", "n": len(headings.get(f"h{i}", []))}
+                 for i in range(2, 7) if headings.get(f"h{i}")]
 
-    # H tags
-    h1s   = [re.sub(r'<[^>]+>', '', h).strip()
-             for h in re.findall(r'<h1[^>]*>(.*?)</h1>', html, re.I | re.S)]
-    hfreq = [{"t": f"H{i}", "n": len(re.findall(rf'<h{i}[\s>]', html, re.I))}
-             for i in range(2, 6) if len(re.findall(rf'<h{i}[\s>]', html, re.I)) > 0]
+    canon    = _canonical(html)
+    lang_m   = re.search(r'<html[^>]*lang=["\']([^"\']+)["\']', html, re.I)
+    lang     = lang_m.group(1).strip() if lang_m else ""
+    noindex  = bool(re.search(
+        r'<meta[^>]*name=["\']robots["\'][^>]*content=["\'][^"\']*noindex', html, re.I))
+    noindex_header = "noindex" in headers.get("x-robots-tag", "").lower()
+    hreflang = bool(re.search(r'hreflang', html, re.I))
 
-    wc   = word_count(html)
-    imgs = re.findall(r'<img[^>]+>', html, re.I)
-    miss = [i for i in imgs if 'alt=' not in i.lower()]
+    imgs        = _images(html)
+    missing_alt = _missing_alt(imgs)
+    img_alt_ok  = len(missing_alt) == 0
 
-    # Schema / OG / Twitter
-    stypes  = re.findall(r'"@type"\s*:\s*"([^"]+)"', html)
-    og_map  = {k: gog(html, k) for k in ["title","description","image","type","url"]}
+    schema_types = _schema_types(html)
+    has_schema   = bool(schema_types)
+
+    og_map  = {k: _og(html, k) for k in ["title","description","image","type","url","site_name"]}
     og_tags = [{"t": f"og:{k}", "v": v} for k, v in og_map.items() if v]
-    tw_map  = {k: gtw(html, k) for k in ["card","title","description","image"]}
+    tw_map  = {k: _twitter(html, k) for k in ["card","title","description","image","site"]}
     tw_tags = [{"t": f"twitter:{k}", "v": v} for k, v in tw_map.items() if v]
+    twitter_card = bool(tw_map.get("card"))
 
-    # Analytics / FB Pixel
-    has_ga  = bool(re.search(r'google-analytics\.com|gtag\(|UA-\d|G-[A-Z0-9]', html, re.I))
+    wc    = _wc(html)
+    wc_ok = wc >= 500
+
+    fpxm  = re.search(r"fbq\('init',\s*['\"](\d+)['\"]", html)
+    fb_px = fpxm.group(1) if fpxm else ""
+
+    has_ga  = bool(re.search(r'google-analytics\.com|gtag\(|G-[A-Z0-9]{6,}', html, re.I))
     has_gtm = bool(re.search(r'googletagmanager\.com', html, re.I))
-    fpxm    = re.search(r"fbq\('init',\s*['\"](\d+)['\"]", html)
-    fb_px   = fpxm.group(1) if fpxm else ""
 
-    # Robots / Sitemap / llms.txt — parallel HEAD checks
-    robots_url   = f"{base}/robots.txt"
-    sitemap_xml1 = f"{base}/sitemap_index.xml"
-    sitemap_xml2 = f"{base}/sitemap.xml"
-    llms_url     = f"{base}/llms.txt"
-    chk = check_parallel([robots_url, sitemap_xml1, sitemap_xml2, llms_url])
-    robots_ok   = chk.get(robots_url, False)
-    sitemap_url = (sitemap_xml1 if chk.get(sitemap_xml1)
-                   else sitemap_xml2 if chk.get(sitemap_xml2) else "")
-    has_llms    = chk.get(llms_url, False)
+    tech_list   = _tech(html, headers)
+    viewport    = bool(re.search(r'viewport', html, re.I))
+    iframes     = bool(re.search(r'<iframe[\s>]', html, re.I))
+    favicon     = bool(re.search(r'<link[^>]*rel=["\']?(?:shortcut )?icon', html, re.I))
+    has_amp     = bool(re.search(r'<html[^>]*\bamp\b', html, re.I))
+    email_exp   = bool(re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', html, re.I))
+    inline_sty  = bool(re.search(r'<[^>]+\bstyle\s*=', html, re.I))
+    dep_html    = bool(re.search(r'<(font|center|marquee|blink)\b', html, re.I))
+    http2       = "h2" in headers.get("via", "").lower() or ":status" in headers
 
-    # Social links
-    links    = re.findall(r'href=["\']([^"\']+)["\']', html, re.I)
-    networks = [("Facebook","facebook.com","F","#1877F2"),
-                ("Instagram","instagram.com","Ig","#E1306C"),
-                ("LinkedIn","linkedin.com","in","#0A66C2"),
-                ("X/Twitter","x.com","X","#000000"),
-                ("YouTube","youtube.com","▶","#FF0000")]
-    social   = [{"name": n, "url": next((l for l in links if d in l), ""),
-                 "ico": ic, "bg": bg, "c": "#fff",
-                 "linked": any(d in l for l in links), "stat": ""}
-                for n, d, ic, bg in networks]
+    server_hdr = headers.get("server", "")
+    charset_m  = re.search(r'charset=([^\s;]+)', headers.get("content-type", ""))
+    charset    = charset_m.group(1).upper() if charset_m else "UTF-8"
 
-    # Tech detection
-    tech_map = [("WordPress",r'wp-content|wp-includes'),
-                ("Shopify",r'cdn\.shopify\.com'),
-                ("Wix",r'wix\.com|wixstatic\.com'),
-                ("Webflow",r'webflow\.com'),
-                ("Next.js",r'__NEXT_DATA__|_next/'),
-                ("React",r'react\.production|react\.development'),
-                ("Vue.js",r'vue\.min\.js'),
-                ("jQuery",r'jquery\.min\.js|jquery-\d'),
-                ("Bootstrap",r'bootstrap\.min\.(css|js)'),
-                ("Cloudflare",r'__cf_bm|cloudflare\.com'),
-                ("Google Analytics",r'google-analytics\.com|gtag\('),
-                ("Google Tag Manager",r'googletagmanager\.com'),
-                ("Facebook Pixel",r"fbq\(|facebook\.com/tr"),
-                ("Tailwind CSS",r'tailwindcss|tailwind\.min'),
-                ("Django",r'csrfmiddlewaretoken'),
-                ("Laravel",r'laravel')]
-    tech_list = [{"name": n, "ver": ""} for n, p in tech_map if re.search(p, html, re.I)]
+    sec_headers = {k: headers.get(k, "") for k in [
+        "x-frame-options", "x-content-type-options",
+        "strict-transport-security", "content-security-policy",
+        "referrer-policy", "permissions-policy",
+    ]}
 
-    server_hdr = ""
-    charset    = "UTF-8"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            server_hdr = r.headers.get("Server", "")
-            ct  = r.headers.get("Content-Type", "")
-            csm = re.search(r'charset=([^\s;]+)', ct)
-            if csm: charset = csm.group(1).upper()
-    except Exception:
-        pass
+    html_kb = len(html.encode("utf-8", errors="replace")) / 1024
+    kws     = _top_kws(html, title_t, meta_t)
 
-    # Scoring
-    op_checks = [title_ok, meta_ok, len(h1s)==1, wc>=500, bool(canon), bool(lang),
-                 not noindex, https_ok, robots_ok, bool(sitemap_url),
-                 bool(stypes), bool(og_tags), len(miss)==0]
-    op_sc  = round(sum(op_checks) / len(op_checks) * 100)
-    geo_sc = round(sum([has_llms, bool(stypes),
-                        bool(re.search(r'hreflang', html, re.I)),
-                        bool(og_tags)]) / 4 * 100)
-    us_sc  = round(sum([https_ok,
-                        not bool(re.search(r'<iframe[\s>]', html, re.I)),
-                        bool(re.search(r'<link[^>]*rel=["\']?(?:shortcut )?icon', html, re.I)),
-                        bool(re.search(r'viewport', html, re.I))]) / 4 * 100)
-    html_kb = len(html.encode()) / 1024
-    pf_sc   = 90 if html_kb < 100 else (72 if html_kb < 300 else 50)
-    ov_sc   = round((op_sc + geo_sc + us_sc + pf_sc) / 4)
+    # Internal links + crawl sub-pages
+    all_links  = _all_links(html, base)
+    int_links  = _internal(all_links, parsed.netloc)
+    broken     = []
+    sub_pages  = []
 
-    # Recommendations
-    recs, p = [], 1
-    def add(title, detail):
-        nonlocal p
-        recs.append({"priority": p, "title": title, "detail": detail}); p += 1
+    static_ext = re.compile(r'\.(jpg|jpeg|png|gif|svg|webp|pdf|zip|mp4|css|js)$', re.I)
+    check_urls = [l for l in int_links if not static_ext.search(l)][:12]
 
-    if not title_ok:
-        add("Fix title tag length",
-            f"Title is {title_len} chars. Aim for 50–60 characters for best SERP display.")
-    if not meta_ok:
-        add("Improve meta description",
-            f"Meta is {meta_len} chars. Keep between 120–160 characters.")
-    if len(h1s) == 0:
-        add("Add H1 heading",
-            "No H1 tag found. Add one H1 with your primary keyword near the top of the page.")
-    elif len(h1s) > 1:
-        add("Fix multiple H1 tags",
-            f"{len(h1s)} H1 tags found. Use exactly one H1 per page.")
-    if not canon:
-        add("Add canonical tag",
-            "No canonical tag found. Add <link rel='canonical'> to prevent duplicate content.")
-    if not robots_ok:
-        add("Create robots.txt",
-            f"No robots.txt at {robots_url}. Create one to guide search engine crawlers.")
-    if not sitemap_url:
-        add("Create XML sitemap",
-            "No sitemap found. Create one and submit to Google Search Console.")
-    if not stypes:
-        add("Add Schema.org markup",
-            "No structured data detected. Add JSON-LD schema to improve rich results and AI visibility.")
-    if not og_tags:
-        add("Add Open Graph tags",
-            "No OG tags found. Add og:title, og:description, og:image for better social sharing.")
-    if not has_llms:
-        add("Add llms.txt for AI visibility",
-            f"Add a llms.txt file at {llms_url} to help AI crawlers understand your content.")
-    if not has_ga and not has_gtm:
-        add("Add web analytics",
-            "No analytics detected. Add Google Analytics to track your traffic and conversions.")
+    lock = threading.Lock()
+    def _chk(url):
+        st, _ = _head(url, timeout=5)
+        with lock:
+            if st == 0 or st >= 400:
+                broken.append({"url": url, "status": st})
 
-    recs = recs[:6]
-    if not recs:
-        recs = [{"priority": 1, "title": "Site looks well optimised",
-                 "detail": "No critical issues found. Add Anthropic API key for a full AI-powered audit."}]
+    threads = [threading.Thread(target=_chk, args=(u,)) for u in check_urls]
+    for t in threads: t.daemon = True; t.start()
+
+    # Fetch sub-pages while link checks run
+    for link in int_links[1:MAX_PAGES]:
+        try:
+            sh, _, sst, _ = _fetch(link, timeout=6)
+            if sst == 200 and sh:
+                sub_pages.append({
+                    "url":    link,
+                    "title":  _tag_text(sh, "title"),
+                    "wc":     _wc(sh),
+                    "h1":     _headings(sh).get("h1", []),
+                    "schema": _schema_types(sh),
+                    "canon":  _canonical(sh),
+                })
+        except Exception:
+            pass
+
+    for t in threads: t.join(6)
+
+    dup_titles = [p["title"] for p in sub_pages if p["title"] == title_t]
+    thin_pages = [p for p in sub_pages if p.get("wc", 0) < 300]
+
+    # Robots.txt
+    robots_url  = f"{base}/robots.txt"
+    r_html, _, r_st, _ = _fetch(robots_url, timeout=6)
+    robots_ok   = r_st == 200 and bool(r_html.strip())
+    disallowed, crawl_delay, sitemap_refs = (
+        _parse_robots(r_html) if robots_ok else ([], None, []))
+
+    # Sitemap
+    sitemap_url, sitemap_urls = "", []
+    for su in [f"{base}/sitemap_index.xml", f"{base}/sitemap.xml"] + sitemap_refs:
+        sm, _, sm_st, _ = _fetch(su, timeout=6)
+        if sm_st == 200 and "<" in sm:
+            sitemap_url  = su
+            sitemap_urls = _parse_sitemap(sm)
+            break
+
+    # llms.txt
+    llms_url = f"{base}/llms.txt"
+    _, _, llms_st, _ = _fetch(llms_url, timeout=5)
+    has_llms = llms_st == 200
+
+    # DNS
+    txt_records = _dns_txt(domain)
+    spf_ok, spf_rec   = _spf(txt_records)
+    dmarc_ok, dmarc_rec = _dmarc(domain)
+
+    # Social / local
+    social    = _social(html)
+    addr_m    = re.search(r'<address[^>]*>(.*?)</address>', html, re.I | re.S)
+    address   = re.sub(r'<[^>]+>', '', addr_m.group(1)).strip() if addr_m else ""
+    phone_m   = re.search(r'(\+?[\d\s\-(].{8,})', _strip(html))
+    phone     = phone_m.group(1).strip() if phone_m else ""
+    local_sch = any("LocalBusiness" in t or "Organization" in t for t in schema_types)
 
     return {
-        "domain": domain,
-        "overall": {
-            "grade": to_grade(ov_sc),
-            "summary": (
-                f"{domain} scores {ov_sc}/100 in this basic scan. "
-                f"Title {'optimal' if title_ok else 'needs fixing'}, "
-                f"{'schema present' if stypes else 'no schema detected'}, "
-                f"{'HTTPS active' if https_ok else 'not on HTTPS'}. "
-                "(Basic scan — add Anthropic key for full AI audit)"
-            )
-        },
+        "domain": domain, "base": base, "final_url": final_url,
+        "status": status, "ttfb": ttfb,
+        "https_ok": https_ok, "redirected": redirected,
+        "title_t": title_t, "title_len": title_len, "title_ok": title_ok,
+        "meta_t": meta_t, "meta_len": meta_len, "meta_ok": meta_ok,
+        "h1s": h1s, "h1_count": h1_count, "h1_status": h1_status, "hfreq": hfreq,
+        "headings": headings, "canon": canon, "lang": lang,
+        "noindex": noindex, "noindex_header": noindex_header,
+        "hreflang": hreflang, "wc": wc, "wc_ok": wc_ok,
+        "img_total": len(imgs), "img_missing_alt": len(missing_alt), "img_alt_ok": img_alt_ok,
+        "schema_types": schema_types, "has_schema": has_schema,
+        "og_tags": og_tags, "tw_tags": tw_tags, "twitter_card": twitter_card,
+        "kws": kws, "fb_px": fb_px, "has_ga": has_ga, "has_gtm": has_gtm,
+        "has_amp": has_amp, "viewport": viewport, "iframes": iframes,
+        "favicon": favicon, "email_exp": email_exp,
+        "inline_sty": inline_sty, "dep_html": dep_html,
+        "tech_list": tech_list, "server": server_hdr, "charset": charset,
+        "http2": http2, "sec_headers": sec_headers,
+        "html_kb": round(html_kb, 1),
+        "int_link_count": len(int_links),
+        "broken": broken, "sub_pages": sub_pages,
+        "dup_titles": dup_titles, "thin_pages": thin_pages,
+        "robots_ok": robots_ok, "robots_url": robots_url,
+        "disallowed": disallowed, "crawl_delay": crawl_delay,
+        "sitemap_ok": bool(sitemap_url), "sitemap_url": sitemap_url,
+        "sitemap_count": len(sitemap_urls),
+        "has_llms": has_llms, "llms_url": llms_url,
+        "spf_ok": spf_ok, "spf_rec": spf_rec,
+        "dmarc_ok": dmarc_ok, "dmarc_rec": dmarc_rec,
+        "social": social, "address": address, "phone": phone, "local_sch": local_sch,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LAYER 3 — AI EXPLAINER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def ai_explain(s):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    # Compact signal summary for the prompt — drop raw lists to save tokens
+    compact = {k: v for k, v in s.items() if k not in
+               ("headings", "kws", "social", "sub_pages", "og_tags", "tw_tags")}
+    compact["h1s_sample"] = s["h1s"][:3]
+    compact["schema_types"] = s["schema_types"]
+    compact["og_present"]   = bool(s["og_tags"])
+    compact["tw_present"]   = s["twitter_card"]
+    compact["broken_urls"]  = [b["url"] for b in s["broken"][:5]]
+    compact["thin_urls"]    = [p["url"] for p in s["thin_pages"][:5]]
+    compact["sec_headers"]  = s["sec_headers"]
+
+    prompt = f"""You are a senior SEO consultant reviewing a REAL crawl report.
+The data below was collected by a live crawler — do NOT invent or guess anything not in the signals.
+Write expert explanations and specific, actionable recommendations.
+
+CRAWL SIGNALS:
+{json.dumps(compact, indent=2, default=str)[:5500]}
+
+Return ONLY valid JSON (no markdown, no backticks):
+
+{{
+  "overall_summary": "2-3 sentence expert verdict based strictly on these signals.",
+  "title_advice": "Explain the title tag issue and the exact fix needed.",
+  "meta_advice": "Explain the meta description issue and the exact fix needed.",
+  "h1_advice": "Explain H1 situation and what to do.",
+  "content_advice": "Explain word count and thin/duplicate content findings.",
+  "schema_advice": "Explain schema findings. Name the specific schema types to add.",
+  "technical_advice": "Explain HTTPS, canonical, security headers, robots, sitemap findings.",
+  "performance_advice": "Explain TTFB, page size, inline styles, deprecated HTML.",
+  "link_advice": "Explain broken links, internal link depth, crawlability.",
+  "email_security_advice": "Explain SPF/DMARC findings and exact DNS records to add.",
+  "geo_advice": "Explain llms.txt, hreflang, structured data for AI/GEO visibility.",
+  "social_advice": "Explain social profile linking and OG/Twitter card findings.",
+  "recommendations": [
+    {{"priority": 1, "title": "Concise title", "detail": "Specific 2-3 sentence fix with exact values/tags."}},
+    {{"priority": 2, "title": "...", "detail": "..."}},
+    {{"priority": 3, "title": "...", "detail": "..."}},
+    {{"priority": 4, "title": "...", "detail": "..."}},
+    {{"priority": 5, "title": "...", "detail": "..."}},
+    {{"priority": 6, "title": "...", "detail": "..."}}
+  ]
+}}
+
+Sort recommendations by SEO impact (critical issues first). Only include real issues from the signals."""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        resp   = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=3000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw   = "".join(b.text for b in resp.content if b.type == "text")
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            return json.loads(match.group(0))
+    except Exception:
+        pass
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LAYER 4 — ASSEMBLE REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_report(s, ai):
+    def _a(key, fb=""):
+        return (ai or {}).get(key, fb) if ai else fb
+
+    # Score each category from real crawler data
+    op_checks = [
+        s["title_ok"], s["meta_ok"], s["h1_count"] == 1,
+        s["wc_ok"], bool(s["canon"]), bool(s["lang"]),
+        not s["noindex"], s["https_ok"], s["robots_ok"], s["sitemap_ok"],
+        s["has_schema"], bool(s["og_tags"]), s["img_alt_ok"], s["favicon"],
+        s["viewport"], not s["dep_html"],
+    ]
+    op_sc = round(sum(op_checks) / len(op_checks) * 100)
+
+    geo_checks = [
+        s["has_llms"], s["has_schema"], s["hreflang"],
+        bool(s["og_tags"]), s["twitter_card"],
+        bool([p for p in s["sub_pages"] if p.get("schema")]),
+    ]
+    geo_sc = round(sum(geo_checks) / len(geo_checks) * 100)
+
+    us_checks = [
+        s["https_ok"], not s["iframes"], s["favicon"], s["viewport"],
+        not s["email_exp"],
+        bool(s["sec_headers"].get("strict-transport-security")),
+        bool(s["sec_headers"].get("x-frame-options")),
+        bool(s["sec_headers"].get("x-content-type-options")),
+        not s["inline_sty"],
+    ]
+    us_sc = round(sum(us_checks) / len(us_checks) * 100)
+
+    pf_checks = [
+        s["html_kb"] < 150, s["ttfb"] < 1.0, s["http2"],
+        not s["dep_html"], not s["inline_sty"],
+        len(s["broken"]) == 0, s["spf_ok"], s["dmarc_ok"],
+    ]
+    pf_sc = round(sum(pf_checks) / len(pf_checks) * 100)
+
+    ov_sc = round(op_sc * 0.35 + geo_sc * 0.15 + us_sc * 0.25 + pf_sc * 0.25)
+
+    summary = _a("overall_summary",
+        f"{s['domain']} scored {ov_sc}/100. "
+        f"{'HTTPS OK' if s['https_ok'] else 'HTTPS missing'}. "
+        f"{len(s['broken'])} broken link(s). "
+        f"{'Schema found' if s['has_schema'] else 'No schema'}. "
+        "(Add ANTHROPIC_API_KEY for full AI explanations.)")
+
+    recs = _a("recommendations", _fallback_recs(s))
+
+    return {
+        "domain": s["domain"],
+        "mode":   "deep_crawl_ai" if ai else "deep_crawl",
+        "overall": {"grade": _grade(ov_sc), "summary": summary},
         "cats": [
-            {"k": "op",  "grade": to_grade(op_sc),  "lbl": "On-Page SEO", "c": "#7F77DD"},
-            {"k": "geo", "grade": to_grade(geo_sc), "lbl": "GEO / AI",    "c": "#1e8449"},
-            {"k": "us",  "grade": to_grade(us_sc),  "lbl": "Usability",   "c": "#c0392b"},
-            {"k": "pf",  "grade": to_grade(pf_sc),  "lbl": "Performance", "c": "#2980b9"},
+            {"k": "op",  "grade": _grade(op_sc),  "lbl": "On-Page SEO", "c": "#7F77DD"},
+            {"k": "geo", "grade": _grade(geo_sc), "lbl": "GEO / AI",    "c": "#1e8449"},
+            {"k": "us",  "grade": _grade(us_sc),  "lbl": "Usability",   "c": "#c0392b"},
+            {"k": "pf",  "grade": _grade(pf_sc),  "lbl": "Performance", "c": "#2980b9"},
         ],
         "op": {
-            "title": {"t": title_t, "len": title_len, "ok": title_ok},
-            "titleAdvice": f"Title is {title_len} chars. {'Optimal (50–60).' if title_ok else 'Shorten to 50–60 characters.'}",
-            "meta": {"t": meta_t, "len": meta_len, "ok": meta_ok},
-            "metaAdvice": f"Meta is {meta_len} chars. {'Optimal (120–160).' if meta_ok else 'Adjust to 120–160 characters.'}",
-            "serpUrl": final_url,
-            "serpTitle": title_t[:57],
-            "serpDesc": meta_t[:155] + ("..." if len(meta_t) > 155 else ""),
-            "h1": [{"tag": "H1", "v": h[:120]} for h in h1s[:3]] or [{"tag": "H1", "v": "Not found"}],
-            "h1Count": len(h1s),
-            "h1Status": "good" if len(h1s)==1 else ("multiple" if len(h1s)>1 else "missing"),
-            "hfreq": hfreq,
-            "kws": top_kws(html, title_t, meta_t),
-            "wc": wc, "wcOk": wc >= 500,
-            "imgAlt": len(miss)==0,
-            "imgAltDesc": "All images have alt attributes." if not miss else f"{len(miss)} image(s) missing alt.",
-            "canon": canon or "Not detected", "canonOk": bool(canon),
-            "noindex": noindex, "noindexOk": not noindex, "noindexHeader": False,
-            "httpsRedir": https_ok,
-            "robots": robots_url if robots_ok else "Not found",
-            "robotsOk": robots_ok, "robotsBlocked": False,
-            "sitemap": sitemap_url or "Not found", "sitemapOk": bool(sitemap_url),
-            "analytics": has_ga or has_gtm,
+            "title":        {"t": s["title_t"], "len": s["title_len"], "ok": s["title_ok"]},
+            "titleAdvice":  _a("title_advice", f"Title is {s['title_len']} chars. Aim for 50–60."),
+            "meta":         {"t": s["meta_t"], "len": s["meta_len"], "ok": s["meta_ok"]},
+            "metaAdvice":   _a("meta_advice", f"Meta is {s['meta_len']} chars. Aim for 120–160."),
+            "serpUrl":      s["final_url"],
+            "serpTitle":    s["title_t"][:57],
+            "serpDesc":     s["meta_t"][:155] + ("..." if s["meta_len"] > 155 else ""),
+            "h1":           [{"tag": "H1", "v": h[:120]} for h in s["h1s"][:3]]
+                            or [{"tag": "H1", "v": "Not found"}],
+            "h1Count":      s["h1_count"],
+            "h1Status":     s["h1_status"],
+            "h1Advice":     _a("h1_advice"),
+            "hfreq":        s["hfreq"],
+            "kws":          s["kws"],
+            "wc":           s["wc"], "wcOk": s["wc_ok"],
+            "contentAdvice": _a("content_advice"),
+            "imgAlt":       s["img_alt_ok"],
+            "imgAltDesc":   (f"All {s['img_total']} images have alt attributes."
+                             if s["img_alt_ok"]
+                             else f"{s['img_missing_alt']} of {s['img_total']} images missing alt."),
+            "canon":        s["canon"] or "Not detected", "canonOk": bool(s["canon"]),
+            "noindex":      s["noindex"], "noindexOk": not s["noindex"],
+            "noindexHeader": s["noindex_header"],
+            "httpsRedir":   s["https_ok"],
+            "robots":       s["robots_url"] if s["robots_ok"] else "Not found",
+            "robotsOk":     s["robots_ok"],
+            "robotsBlocked": bool(s["disallowed"]),
+            "disallowedPaths": s["disallowed"][:10],
+            "crawlDelay":   s["crawl_delay"],
+            "sitemap":      s["sitemap_url"] or "Not found", "sitemapOk": s["sitemap_ok"],
+            "sitemapCount": s["sitemap_count"],
+            "analytics":    s["has_ga"] or s["has_gtm"],
             "analyticsTools": [t for t in [
-                "Google Analytics" if has_ga else None,
-                "Google Tag Manager" if has_gtm else None
+                "Google Analytics" if s["has_ga"] else None,
+                "Google Tag Manager" if s["has_gtm"] else None,
             ] if t],
-            "schema": bool(stypes), "schemaTypes": list(set(stypes))[:5],
-            "lang": lang, "langOk": bool(lang),
-            "hreflang": bool(re.search(r'hreflang', html, re.I)),
-            "hreflangDesc": "Hreflang tags found." if re.search(r'hreflang', html, re.I) else "No hreflang tags.",
-            "amp": bool(re.search(r'<html[^>]*\bamp\b', html, re.I)),
-            "ampDesc": "AMP enabled." if re.search(r'<html[^>]*\bamp\b', html, re.I) else "AMP not enabled.",
-            "flash": False,
+            "schema":       s["has_schema"], "schemaTypes": s["schema_types"][:8],
+            "schemaAdvice": _a("schema_advice"),
+            "lang":         s["lang"], "langOk": bool(s["lang"]),
+            "hreflang":     s["hreflang"],
+            "hreflangDesc": ("Hreflang tags found." if s["hreflang"]
+                             else "No hreflang tags detected."),
+            "amp":          s["has_amp"],
+            "ampDesc":      "AMP enabled." if s["has_amp"] else "AMP not enabled.",
+            "flash":        False,
         },
         "geo": {
-            "renderPct": "N/A", "renderOk": True,
-            "renderDesc": "Render % unavailable in basic scan.",
-            "llmsTxt": has_llms,
-            "llmsTxtUrl": llms_url if has_llms else "",
-            "llmsDesc": "llms.txt found." if has_llms else "No llms.txt — add one for AI crawler guidance.",
-            "traffic": {"org": 0, "paid": 0, "ai": 0},
-            "kws": [],
-            "positions": [{"r": r, "n": 0} for r in [
+            "renderPct":  "N/A", "renderOk": True,
+            "renderDesc": "JS render % needs headless browser.",
+            "llmsTxt":    s["has_llms"],
+            "llmsTxtUrl": s["llms_url"] if s["has_llms"] else "",
+            "llmsDesc":   ("llms.txt found — good for AI crawler guidance."
+                           if s["has_llms"]
+                           else "No llms.txt. Add one for AI/LLM visibility."),
+            "geoAdvice":  _a("geo_advice"),
+            "traffic":    {"org": 0, "paid": 0, "ai": 0},
+            "kws":        [],
+            "positions":  [{"r": r, "n": 0} for r in [
                 "Position 1","Position 2-3","Position 4-10",
                 "Position 11-20","Position 21-30","Position 31-100"]],
         },
         "us": {
-            "cwv": {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": False},
-            "cwvAdvice": "CWV data unavailable in basic scan. Check Google Search Console.",
-            "mob": {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
-                    "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
-            "desk": {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
-                     "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
-            "viewport": bool(re.search(r'viewport', html, re.I)),
-            "iframes": bool(re.search(r'<iframe[\s>]', html, re.I)),
-            "iframesDesc": "iFrames detected." if re.search(r'<iframe[\s>]', html, re.I) else "No iFrames detected.",
-            "fontSizes": True, "tapTargets": True,
-            "favicon": bool(re.search(r'<link[^>]*rel=["\']?(?:shortcut )?icon', html, re.I)),
-            "emailPrivacy": not bool(re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', html, re.I)),
-            "flash": False,
+            "cwv":         {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": False},
+            "cwvAdvice":   "Core Web Vitals require PageSpeed API. Check Google Search Console.",
+            "mob":         {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
+                            "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
+            "desk":        {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
+                            "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
+            "viewport":    s["viewport"],
+            "iframes":     s["iframes"],
+            "iframesDesc": ("iFrames detected." if s["iframes"] else "No iFrames."),
+            "fontSizes":   True, "tapTargets": True,
+            "favicon":     s["favicon"],
+            "emailPrivacy": not s["email_exp"],
+            "emailAdvice": ("Email address exposed in HTML." if s["email_exp"] else ""),
+            "flash":       False,
+            "secHeaders":  s["sec_headers"],
+            "secAdvice":   _a("technical_advice"),
+            "ttfb":        s["ttfb"],
         },
         "pf": {
-            "speed": {"srv": "N/A", "cnt": "N/A", "scr": "N/A", "ok": True},
-            "size": {"tot": f"{html_kb/1024:.2f}MB (HTML only)",
-                     "html": f"{html_kb:.0f}KB", "css": "N/A",
-                     "js": "N/A", "img": "N/A", "other": "N/A",
-                     "ok": html_kb < 500},
-            "comp": {"rate": "N/A", "html": "N/A", "css": "N/A",
-                     "js": "N/A", "img": "N/A", "other": "N/A", "ok": True},
-            "http2": True, "imgOpt": True,
-            "minify": False, "minifyDesc": "Minification not checked in basic scan.",
+            "speed":   {"srv": f"{s['ttfb']}s", "cnt": "N/A", "scr": "N/A",
+                        "ok": s["ttfb"] < 1.0},
+            "size":    {"tot": f"{s['html_kb']:.0f}KB (HTML only)",
+                        "html": f"{s['html_kb']:.0f}KB",
+                        "css": "N/A", "js": "N/A", "img": "N/A", "other": "N/A",
+                        "ok": s["html_kb"] < 500},
+            "comp":    {"rate": "N/A", "html": "N/A", "css": "N/A",
+                        "js": "N/A", "img": "N/A", "other": "N/A", "ok": True},
+            "http2":   s["http2"], "imgOpt": True,
+            "minify":  False, "minifyDesc": "Minification needs full resource loading.",
             "jsErrors": False, "jsErrDesc": "",
-            "inlineStyles": False, "inlineDesc": "", "depHtml": False,
-            "res": {"tot": 0, "html": 1, "js": 0, "css": 0, "img": 0, "other": 0},
+            "inlineStyles": s["inline_sty"],
+            "inlineDesc": ("Inline styles found — move to external CSS." if s["inline_sty"] else ""),
+            "depHtml":  s["dep_html"],
+            "res":      {"tot": len(s["sub_pages"]) + 1, "html": len(s["sub_pages"]) + 1,
+                         "js": 0, "css": 0, "img": 0, "other": 0},
+            "perfAdvice": _a("performance_advice"),
         },
-        "social": social,
-        "fbPixel": fb_px, "fbPixelOk": bool(fb_px),
-        "ogTags": og_tags,
-        "twitterCard": bool(tw_map.get("card")),
-        "twitterTags": tw_tags,
+        "crawl": {
+            "pages_crawled":  len(s["sub_pages"]) + 1,
+            "broken_links":   s["broken"],
+            "broken_count":   len(s["broken"]),
+            "internal_links": s["int_link_count"],
+            "thin_pages":     [p["url"] for p in s["thin_pages"]][:5],
+            "dup_titles":     s["dup_titles"][:3],
+            "sitemap_count":  s["sitemap_count"],
+            "link_advice":    _a("link_advice"),
+        },
+        "social":      s["social"],
+        "fbPixel":     s["fb_px"], "fbPixelOk": bool(s["fb_px"]),
+        "ogTags":      s["og_tags"],
+        "twitterCard": s["twitter_card"],
+        "twitterTags": s["tw_tags"],
+        "socialAdvice": _a("social_advice"),
         "local": {
-            "hasAddress": False, "phone": "", "addr": "",
-            "localSchema": any("LocalBusiness" in t for t in stypes),
-            "schemaType": "LocalBusiness" if any("LocalBusiness" in t for t in stypes) else "",
-            "gbp": {"found": False, "name": "", "addr": "", "phone": "", "site": ""},
-            "reviews": {"rating": 0, "count": 0, "dist": [0, 0, 0, 0, 0]},
+            "hasAddress": bool(s["address"]),
+            "phone":      s["phone"],
+            "addr":       s["address"],
+            "localSchema": s["local_sch"],
+            "schemaType": "LocalBusiness" if s["local_sch"] else "",
+            "gbp":        {"found": False, "name": "", "addr": "", "phone": "", "site": ""},
+            "reviews":    {"rating": 0, "count": 0, "dist": [0,0,0,0,0]},
         },
         "tech": {
-            "list": tech_list or [{"name": "Unknown", "ver": ""}],
-            "dmarc": False, "dmarcDesc": "DMARC not checked in basic scan.",
-            "spf": False, "spfRecord": "",
-            "server": server_hdr, "serverIp": "", "charset": charset,
-            "http2": True, "http3": False,
+            "list":       [{"name": n, "ver": ""} for n in s["tech_list"]],
+            "dmarc":      s["dmarc_ok"],
+            "dmarcDesc":  (f"DMARC found: {s['dmarc_rec']}" if s["dmarc_ok"]
+                           else "No DMARC record — domain can be spoofed."),
+            "spf":        s["spf_ok"],
+            "spfRecord":  s["spf_rec"],
+            "emailSecAdvice": _a("email_security_advice"),
+            "server":     s["server"],
+            "serverIp":   "",
+            "charset":    s["charset"],
+            "http2":      s["http2"],
+            "http3":      False,
+            "secHeaders": s["sec_headers"],
         },
         "recommendations": recs,
     }
 
 
-# ── Vercel Handler ────────────────────────────────────────────────────────────
+def _fallback_recs(s):
+    recs, p = [], 1
+    def add(title, detail):
+        nonlocal p
+        recs.append({"priority": p, "title": title, "detail": detail}); p += 1
+
+    if not s["title_ok"]:
+        add("Fix title tag", f"Title is {s['title_len']} chars. Aim for 50–60.")
+    if not s["meta_ok"]:
+        add("Improve meta description", f"Meta is {s['meta_len']} chars. Aim for 120–160.")
+    if s["h1_status"] != "good":
+        add("Fix H1 tags", f"{s['h1_count']} H1(s) found. Use exactly one per page.")
+    if s["broken"]:
+        urls = ", ".join(b["url"] for b in s["broken"][:3])
+        add("Fix broken links", f"{len(s['broken'])} broken link(s): {urls}")
+    if not s["has_schema"]:
+        add("Add Schema.org markup", "No structured data. Add JSON-LD schema.")
+    if not s["dmarc_ok"]:
+        add("Add DMARC record", "No DMARC — domain can be spoofed in phishing emails.")
+    if not s["spf_ok"]:
+        add("Add SPF record", "No SPF record. Add to prevent email spoofing.")
+    if not s["has_llms"]:
+        add("Add llms.txt", f"Create {s['llms_url']} for AI crawler guidance.")
+    if not s["robots_ok"]:
+        add("Create robots.txt", "No robots.txt found at the root.")
+    if not s["sitemap_ok"]:
+        add("Create XML sitemap", "No sitemap found. Create and submit to Search Console.")
+    return recs[:6] or [{"priority": 1, "title": "No critical issues found",
+                          "detail": "Basic crawl passed. Add ANTHROPIC_API_KEY for AI analysis."}]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VERCEL HANDLER
+# ══════════════════════════════════════════════════════════════════════════════
 
 class handler(BaseHTTPRequestHandler):
 
@@ -550,21 +785,17 @@ class handler(BaseHTTPRequestHandler):
             job_id = body.get("job_id", "")
             url    = body.get("url", "").strip()
             stored = store_get(job_id)
-            mode   = "ai"
 
-            # Try Claude AI — silently fall back on ANY error
-            try:
-                data = run_claude_audit(url)
-            except Exception:
-                mode = "fallback"
-                data = run_fallback_audit(url)
+            signals  = collect_signals(url)   # Layer 1+2: deep crawl
+            ai_prose = ai_explain(signals)    # Layer 3: AI explanations
+            report   = build_report(signals, ai_prose)  # Layer 4: assemble
 
             store_set(job_id, {
                 "status": "done",
-                "data":   data,
+                "data":   report,
                 "name":   stored.get("name", ""),
                 "email":  stored.get("email", ""),
-                "mode":   mode,
+                "mode":   report["mode"],
             })
 
         except Exception as e:
