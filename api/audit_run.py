@@ -111,11 +111,23 @@ def _twitter(html, name):
         if m: return m.group(1).strip()
     return ""
 
+def _strip_scripts(html):
+    """Remove <script>, <style>, <noscript> blocks before text extraction."""
+    html = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.I | re.S)
+    html = re.sub(r'<style[^>]*>.*?</style>',   ' ', html, flags=re.I | re.S)
+    html = re.sub(r'<noscript[^>]*>.*?</noscript>', ' ', html, flags=re.I | re.S)
+    return html
+
 def _strip(html):
     return re.sub(r'<[^>]+>', ' ', html)
 
+def _strip_clean(html):
+    """Strip scripts then tags — use for word count, keywords, email scan."""
+    return _strip(_strip_scripts(html))
+
 def _wc(html):
-    return len(re.sub(r'\s+', ' ', _strip(html)).split())
+    text = _strip_clean(html)
+    return len(re.sub(r'\s+', ' ', text).split())
 
 def _headings(html):
     result = {}
@@ -150,7 +162,8 @@ def _images(html):
     return re.findall(r'<img[^>]+>', html, re.I)
 
 def _missing_alt(imgs):
-    return [i for i in imgs if not re.search(r'\balt\s*=\s*["\'][^"\']{1,}["\']', i, re.I)]
+    """Return images with no alt attribute at all (truly missing)."""
+    return [i for i in imgs if 'alt=' not in i.lower()]
 
 def _tech(html, headers):
     checks = [
@@ -194,7 +207,7 @@ STOP = {
 }
 
 def _top_kws(html, title, meta, n=8):
-    text  = _strip(html).lower()
+    text  = _strip_clean(html).lower()  # exclude script/style content
     words = re.sub(r'[^\w\s]', '', text).split()
     words = [w for w in words if len(w) > 3 and w not in STOP]
     freq  = {}
@@ -244,17 +257,26 @@ def _dmarc(domain):
     return False, ""
 
 def _parse_robots(txt):
+    """Parse robots.txt, collecting Disallow rules only from User-agent: * block."""
     dis, delay, smaps = [], None, []
+    in_star_block = False  # True when inside a User-agent: * section
     for line in txt.splitlines():
         l = line.strip()
-        if l.lower().startswith("disallow:"):
-            v = l[9:].strip()
-            if v: dis.append(v)
-        elif l.lower().startswith("crawl-delay:"):
-            try: delay = float(l[12:].strip())
-            except: pass
-        elif l.lower().startswith("sitemap:"):
+        if not l or l.startswith("#"):
+            continue
+        ll = l.lower()
+        if ll.startswith("user-agent:"):
+            agent = l[11:].strip()
+            in_star_block = (agent == "*")
+        elif ll.startswith("sitemap:"):
             smaps.append(l[8:].strip())
+        elif in_star_block:
+            if ll.startswith("disallow:"):
+                v = l[9:].strip()
+                if v: dis.append(v)
+            elif ll.startswith("crawl-delay:"):
+                try: delay = float(l[12:].strip())
+                except: pass
     return dis, delay, smaps
 
 def _parse_sitemap(xml):
@@ -336,10 +358,22 @@ def collect_signals(start_url):
     iframes     = bool(re.search(r'<iframe[\s>]', html, re.I))
     favicon     = bool(re.search(r'<link[^>]*rel=["\']?(?:shortcut )?icon', html, re.I))
     has_amp     = bool(re.search(r'<html[^>]*\bamp\b', html, re.I))
-    email_exp   = bool(re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', html, re.I))
-    inline_sty  = bool(re.search(r'<[^>]+\bstyle\s*=', html, re.I))
+    # Scan only visible text (not JS/schema/meta) for exposed emails
+    _visible_text = _strip_clean(html)
+    email_exp   = bool(re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', _visible_text, re.I))
+    # Inline styles: only flag on body content tags, not html/head/meta injected attrs
+    _body_m = re.search(r'<body[^>]*>(.*)', html, re.I | re.S)
+    _body_html = _body_m.group(1) if _body_m else html
+    inline_sty  = bool(re.search(r'<(?!(?:html|head|meta|link|script|style|noscript)\b)[^>]+\bstyle\s*=', _body_html, re.I))
     dep_html    = bool(re.search(r'<(font|center|marquee|blink)\b', html, re.I))
-    http2       = "h2" in headers.get("via", "").lower() or ":status" in headers
+    # HTTP/2 detection: check Alt-Svc (signals h2/h3 support) and Cloudflare CF-Ray header
+    alt_svc = headers.get("alt-svc", "").lower()
+    http2 = (
+        "h2" in alt_svc or
+        "h3" in alt_svc or
+        "h2" in headers.get("via", "").lower() or
+        bool(headers.get("cf-ray", ""))  # Cloudflare always serves H2+
+    )
 
     server_hdr = headers.get("server", "")
     charset_m  = re.search(r'charset=([^\s;]+)', headers.get("content-type", ""))
@@ -361,7 +395,10 @@ def collect_signals(start_url):
     sub_pages  = []
 
     static_ext = re.compile(r'\.(jpg|jpeg|png|gif|svg|webp|pdf|zip|mp4|css|js)$', re.I)
-    check_urls = [l for l in int_links if not static_ext.search(l)][:12]
+    # Exclude homepage and already-fetched URL from link checks
+    _skip = {start_url.rstrip("/"), final_url.rstrip("/")}
+    check_urls = [l for l in int_links
+                  if not static_ext.search(l) and l.rstrip("/") not in _skip][:12]
 
     lock = threading.Lock()
     def _chk(url):
@@ -416,7 +453,12 @@ def collect_signals(start_url):
 
     # Sitemap
     sitemap_url, sitemap_urls = "", []
-    for su in [f"{base}/sitemap_index.xml", f"{base}/sitemap.xml"] + sitemap_refs:
+    # Normalize sitemap refs (some robots.txt use relative paths — non-standard but real)
+    abs_sitemap_refs = [
+        r if r.startswith("http") else urljoin(base, r)
+        for r in sitemap_refs
+    ]
+    for su in [f"{base}/sitemap_index.xml", f"{base}/sitemap.xml"] + abs_sitemap_refs:
         sm, _, sm_st, _ = _fetch(su, timeout=6)
         if sm_st == 200 and "<" in sm:
             sitemap_url  = su
@@ -437,7 +479,11 @@ def collect_signals(start_url):
     social    = _social(html)
     addr_m    = re.search(r'<address[^>]*>(.*?)</address>', html, re.I | re.S)
     address   = re.sub(r'<[^>]+>', '', addr_m.group(1)).strip() if addr_m else ""
-    phone_m   = re.search(r'(\+?[\d\s\-(].{8,})', _strip(html))
+    # Phone: strict pattern matching real phone formats, not arbitrary digit strings
+    phone_m   = re.search(
+        r'(\+?\d[\d\s\-().]{7,18}\d)',
+        re.sub(r'[a-zA-Z]{3,}', ' ', _strip_clean(html))  # remove word-heavy lines
+    )
     phone     = phone_m.group(1).strip() if phone_m else ""
     local_sch = any("LocalBusiness" in t or "Organization" in t for t in schema_types)
 
@@ -673,8 +719,8 @@ def build_report(s, ai):
                 "Position 11-20","Position 21-30","Position 31-100"]],
         },
         "us": {
-            "cwv":         {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": False},
-            "cwvAdvice":   "Core Web Vitals require PageSpeed API. Check Google Search Console.",
+            "cwv":         {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": None},
+            "cwvAdvice":   "Core Web Vitals data requires the PageSpeed Insights API. Check Google Search Console for real CWV data.",
             "mob":         {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
                             "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
             "desk":        {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
