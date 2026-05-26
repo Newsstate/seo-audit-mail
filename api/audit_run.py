@@ -11,7 +11,7 @@ Architecture:
 
 import json, os, re, threading, time
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, quote as url_quote
 import urllib.request, urllib.error
 
 
@@ -288,6 +288,166 @@ def _grade(score):
         if score >= t: return g
     return "F"
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGESPEED INSIGHTS API
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _psi(url, strategy, api_key):
+    """
+    Call PageSpeed Insights API for mobile or desktop.
+    Returns dict with score, CWV metrics, lab data, opportunities.
+    Returns None on any failure.
+    """
+    endpoint = (
+        f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+        f"?url={url_quote(url, safe='')}"
+        f"&strategy={strategy}"
+        f"&key={api_key}"
+        f"&category=PERFORMANCE"
+    )
+    try:
+        req = urllib.request.Request(endpoint, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=55) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None
+
+    cats  = data.get("lighthouseResult", {}).get("categories", {})
+    audits = data.get("lighthouseResult", {}).get("audits", {})
+    crux  = data.get("loadingExperience", {}).get("metrics", {})
+
+    def _ms(key):
+        v = audits.get(key, {}).get("displayValue", "")
+        return v if v else "N/A"
+
+    def _num(key):
+        return audits.get(key, {}).get("numericValue")
+
+    def _crux(key, field="category"):
+        m = crux.get(key, {})
+        if not m: return None
+        return m.get("percentile") or m.get(field)
+
+    score = round((cats.get("performance", {}).get("score") or 0) * 100)
+
+    # Core metrics
+    lcp_ms  = _num("largest-contentful-paint")
+    inp_ms  = _num("total-blocking-time")   # TBT as INP proxy when CrUX unavailable
+    cls_num = _num("cumulative-layout-shift")
+    fcp_ms  = _num("first-contentful-paint")
+
+    def _fmt_sec(ms):
+        if ms is None: return "N/A"
+        return f"{ms/1000:.1f}s"
+
+    def _fmt_cls(v):
+        if v is None: return "N/A"
+        return f"{v:.3f}"
+
+    # CrUX field data (real user metrics) — preferred over lab data
+    crux_lcp = crux.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile")
+    crux_inp = crux.get("INTERACTION_TO_NEXT_PAINT", {}).get("percentile")
+    crux_cls = crux.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile")
+    crux_overall = data.get("loadingExperience", {}).get("overall_category")
+
+    # Opportunities (improvement suggestions)
+    opp_keys = [
+        "render-blocking-resources", "unused-css-rules", "unused-javascript",
+        "uses-optimized-images", "uses-webp-images", "uses-responsive-images",
+        "efficiently-encode-images", "enable-text-compression",
+        "uses-long-cache-ttl", "server-response-time",
+        "eliminate-render-blocking-resources", "defer-offscreen-images",
+    ]
+    opps = []
+    for k in opp_keys:
+        a = audits.get(k, {})
+        if a.get("score", 1) is not None and (a.get("score") or 1) < 0.9:
+            savings = a.get("displayValue", "")
+            if savings and savings != "N/A":
+                opps.append({"n": a.get("title", k), "s": savings})
+    opps = opps[:6]
+
+    # Build CWV pass/fail — use CrUX if available, else lab thresholds
+    if crux_lcp and crux_cls is not None:
+        cwv_pass = (
+            crux_lcp <= 2500 and
+            (crux_inp is None or crux_inp <= 200) and
+            (crux_cls / 100 if crux_cls > 1 else crux_cls) <= 0.1
+        )
+        lcp_display = _fmt_sec(crux_lcp)
+        inp_display = f"{crux_inp}ms" if crux_inp else _ms("total-blocking-time")
+        cls_display = _fmt_cls((crux_cls / 100) if crux_cls and crux_cls > 1 else crux_cls)
+        crux_source = True
+    else:
+        cwv_pass = (
+            (lcp_ms or 9999) <= 2500 and
+            (cls_num or 9999) <= 0.1
+        )
+        lcp_display = _fmt_sec(lcp_ms)
+        inp_display = _ms("total-blocking-time")
+        cls_display = _fmt_cls(cls_num)
+        crux_source = False
+
+    return {
+        "score":     score,
+        "fcp":       _fmt_sec(fcp_ms),
+        "si":        _ms("speed-index"),
+        "lcp":       lcp_display,
+        "tti":       _ms("interactive"),
+        "tbt":       _ms("total-blocking-time"),
+        "cls":       cls_display,
+        "opps":      opps,
+        "cwv_pass":  cwv_pass,
+        "crux":      crux_source,
+        "crux_overall": crux_overall or "",
+    }
+
+
+def fetch_pagespeed(url):
+    """
+    Fetch both mobile and desktop PSI results in parallel.
+    Requires PAGESPEED_API_KEY environment variable.
+    Returns (mobile_dict, desktop_dict, cwv_dict) or (None, None, None).
+    """
+    api_key = os.environ.get("PAGESPEED_API_KEY", "").strip()
+    if not api_key:
+        return None, None, None
+
+    mob_result  = [None]
+    desk_result = [None]
+
+    def _fetch_mob():
+        mob_result[0] = _psi(url, "mobile", api_key)
+
+    def _fetch_desk():
+        desk_result[0] = _psi(url, "desktop", api_key)
+
+    t1 = threading.Thread(target=_fetch_mob)
+    t2 = threading.Thread(target=_fetch_desk)
+    t1.daemon = True; t2.daemon = True
+    t1.start(); t2.start()
+    t1.join(60); t2.join(60)
+
+    mob  = mob_result[0]
+    desk = desk_result[0]
+
+    # Derive CWV from mobile (Google uses mobile for CWV assessment)
+    cwv = None
+    if mob:
+        cwv = {
+            "lcp":  mob["lcp"],
+            "inp":  mob["tbt"],   # TBT proxy when INP not in lab data
+            "cls":  mob["cls"],
+            "pass": mob["cwv_pass"],
+        }
+        if mob.get("crux"):
+            cwv["inp"] = next(
+                (v for v in [mob.get("crux_inp")] if v), mob["tbt"]
+            )
+
+    return mob, desk, cwv
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYER 2 — COLLECT ALL SIGNALS
@@ -597,7 +757,7 @@ Sort recommendations by SEO impact (critical issues first). Only include real is
 # LAYER 4 — ASSEMBLE REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_report(s, ai):
+def build_report(s, ai, mob_psi=None, desk_psi=None, cwv_psi=None):
     def _a(key, fb=""):
         return (ai or {}).get(key, fb) if ai else fb
 
@@ -618,6 +778,7 @@ def build_report(s, ai):
     ]
     geo_sc = round(sum(geo_checks) / len(geo_checks) * 100)
 
+    cwv_pass = (cwv_psi or {}).get("pass")
     us_checks = [
         s["https_ok"], not s["iframes"], s["favicon"], s["viewport"],
         not s["email_exp"],
@@ -625,13 +786,26 @@ def build_report(s, ai):
         bool(s["sec_headers"].get("x-frame-options")),
         bool(s["sec_headers"].get("x-content-type-options")),
         not s["inline_sty"],
+        cwv_pass is True,  # CWV pass counts toward usability score
     ]
     us_sc = round(sum(us_checks) / len(us_checks) * 100)
 
+    # Performance scoring: use PSI score when available
+    mob_score  = (mob_psi or {}).get("score", 0)
+    desk_score = (desk_psi or {}).get("score", 0)
+    psi_score  = max(mob_score, desk_score)
     pf_checks = [
-        s["html_kb"] < 150, s["ttfb"] < 1.0, s["http2"],
-        not s["dep_html"], not s["inline_sty"],
-        len(s["broken"]) == 0, s["spf_ok"], s["dmarc_ok"],
+        s["html_kb"] < 150,
+        s["ttfb"] < 1.0,
+        s["http2"],
+        not s["dep_html"],
+        not s["inline_sty"],
+        len(s["broken"]) == 0,
+        s["spf_ok"],
+        s["dmarc_ok"],
+        # PSI performance bonus/penalty
+        psi_score >= 90 if psi_score > 0 else True,
+        psi_score >= 50 if psi_score > 0 else True,
     ]
     pf_sc = round(sum(pf_checks) / len(pf_checks) * 100)
 
@@ -719,11 +893,16 @@ def build_report(s, ai):
                 "Position 11-20","Position 21-30","Position 31-100"]],
         },
         "us": {
-            "cwv":         {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": None},
-            "cwvAdvice":   "Core Web Vitals data requires the PageSpeed Insights API. Check Google Search Console for real CWV data.",
-            "mob":         {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
+            "cwv": cwv_psi if cwv_psi else {"lcp": "N/A", "inp": "N/A", "cls": "N/A", "pass": None},
+            "cwvAdvice": (
+                "Core Web Vitals measured from real user data (CrUX). "
+                f"LCP: {cwv_psi['lcp']}, CLS: {cwv_psi['cls']}."
+                if cwv_psi and cwv_psi.get("pass") is not None
+                else "Core Web Vitals data requires the PageSpeed Insights API. Check Google Search Console for real CWV data."
+            ),
+            "mob": mob_psi if mob_psi else {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
                             "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
-            "desk":        {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
+            "desk": desk_psi if desk_psi else {"score": 0, "fcp": "N/A", "si": "N/A", "lcp": "N/A",
                             "tti": "N/A", "tbt": "N/A", "cls": "N/A", "opps": []},
             "viewport":    s["viewport"],
             "iframes":     s["iframes"],
@@ -846,9 +1025,10 @@ class handler(BaseHTTPRequestHandler):
             url    = body.get("url", "").strip()
             stored = store_get(job_id)
 
-            signals  = collect_signals(url)   # Layer 1+2: deep crawl
-            ai_prose = ai_explain(signals)    # Layer 3: AI explanations
-            report   = build_report(signals, ai_prose)  # Layer 4: assemble
+            signals  = collect_signals(url)       # Layer 1+2: deep crawl
+            mob_psi, desk_psi, cwv_psi = fetch_pagespeed(url)  # PageSpeed API
+            ai_prose = ai_explain(signals)         # Layer 3: AI explanations
+            report   = build_report(signals, ai_prose, mob_psi, desk_psi, cwv_psi)  # Layer 4
 
             store_set(job_id, {
                 "status": "done",
