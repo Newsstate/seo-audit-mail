@@ -1227,14 +1227,17 @@ class handler(BaseHTTPRequestHandler):
 
             # CrUX (free, always) + PSI (if key set) — run in parallel
             mob_psi, desk_psi, cwv_psi = fetch_pagespeed(url)  # PageSpeed API (optional)
-            # Strip _raw (full PSI JSON) before storage — only keep screenshot
+
+            # Extract mob_raw for CrUX BEFORE stripping (order matters)
+            mob_raw = (mob_psi or {}).get("_raw")
+
+            # CrUX: extract from PSI response (free) or call CrUX API separately
+            crux_data = fetch_crux(url, psi_data=mob_raw)
+
+            # Now strip _raw (huge full PSI JSON) — no longer needed
             for _p in [mob_psi, desk_psi]:
                 if _p and "_raw" in _p:
                     del _p["_raw"]
-
-            # CrUX: extract from PSI response (free) or call CrUX API separately
-            mob_raw = (mob_psi or {}).get("_raw")
-            crux_data = fetch_crux(url, psi_data=mob_raw)
 
             # Merge: PSI CWV takes priority if available, else use CrUX
             if cwv_psi is None and crux_data:
