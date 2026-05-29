@@ -939,7 +939,7 @@ input.err{border-color:#ef4444}
         <div class="crow" id="device-row">
           <div class="crow-hdr"><div class="cicon ci-i">i</div><div class="crow-title">Device Rendering — how your page appears on different devices</div></div>
           <div class="crow-body" style="background:#f9fafb;border-left:none;border:1px solid #e5e7eb">
-            Screenshots load your live site in scaled frames. This illustrates how your page renders on mobile and desktop.
+            Live screenshots captured via PageSpeed Insights — showing how your site renders on real devices.
           </div>
           <div class="device-wrap" id="device-wrap">
             <!-- Mobile frame -->
@@ -1644,7 +1644,10 @@ function closeModalAndShowReport(){
 
     function showImg(screenId, placeholderId, b64) {
       const screen = $(screenId);
-      if (!screen) return;
+      if (!screen || !b64 || b64.length < 100) {
+        showUnavailable(screenId, auditUrl);
+        return;
+      }
       const img = new Image();
       img.onload = () => {
         screen.innerHTML = '';
@@ -1652,7 +1655,9 @@ function closeModalAndShowReport(){
         screen.appendChild(img);
       };
       img.onerror = () => showUnavailable(screenId, auditUrl);
-      img.src = 'data:image/jpeg;base64,' + b64;
+      // PSI can return jpeg or webp — try jpeg first, webp as fallback prefix
+      const prefix = b64.startsWith('/9j/') ? 'data:image/jpeg;base64,' : 'data:image/jpeg;base64,';
+      img.src = prefix + b64;
     }
 
     function showUnavailable(screenId, url) {
