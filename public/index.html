@@ -550,6 +550,9 @@ input.err{border-color:#ef4444}
   padding:14px 18px;font-size:12.5px;
 }
 
+/* ── Spinner ── */
+@keyframes spin{to{transform:rotate(360deg)}}
+
 /* ── Print ── */
 @media print{
   body,#page-report{background:#fff!important;padding:0!important}
@@ -563,6 +566,9 @@ input.err{border-color:#ef4444}
   .rec-num{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
   @page{margin:14mm;size:A4}
 }
+/* ── Spinner ── */
+@keyframes spin{to{transform:rotate(360deg)}}
+
 /* ── Print ── */
 @media print{
   body,#page-report{background:#fff!important;padding:0!important}
@@ -949,8 +955,11 @@ input.err{border-color:#ef4444}
                     <div style="background:#1f2937;height:16px;display:flex;align-items:center;justify-content:center">
                       <div style="width:40px;height:4px;background:#374151;border-radius:2px"></div>
                     </div>
-                    <div style="height:224px;overflow:hidden;position:relative;background:#f9fafb" id="mob-screen">
-                      <div style="height:100%;display:flex;align-items:center;justify-content:center"><div style="font-size:10px;color:#d1d5db">Loading...</div></div>
+                    <div style="height:224px;overflow:hidden;position:relative;background:#f8fafc" id="mob-screen">
+                      <div id="mob-placeholder" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
+                        <div style="width:32px;height:32px;border:2px solid #e5e7eb;border-top-color:#e8453c;border-radius:50%;animation:spin 1s linear infinite"></div>
+                        <div style="font-size:10px;color:#9ca3af">Loading preview...</div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -988,8 +997,11 @@ input.err{border-color:#ef4444}
                   </div>
                   <div id="desk-url-bar" style="flex:1;background:#1f2937;border-radius:3px;padding:2px 7px;font-size:8.5px;color:#9ca3af;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
                 </div>
-                <div style="height:220px;overflow:hidden;background:#f9fafb;border-radius:0 0 4px 4px" id="desk-screen">
-                    <div style="height:100%;display:flex;align-items:center;justify-content:center"><div style="font-size:10px;color:#d1d5db">Loading...</div></div>
+                <div style="height:220px;overflow:hidden;background:#f8fafc;border-radius:0 0 4px 4px" id="desk-screen">
+                    <div id="desk-placeholder" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
+                      <div style="width:28px;height:28px;border:2px solid #e5e7eb;border-top-color:#e8453c;border-radius:50%;animation:spin 1s linear infinite"></div>
+                      <div style="font-size:10px;color:#9ca3af">Loading preview...</div>
+                    </div>
                 </div>
               </div>
               <div style="font-size:10px;color:#9ca3af;text-align:center;margin-top:6px">1280px × 800px</div>
@@ -1622,88 +1634,92 @@ function closeModalAndShowReport(){
     const auditUrl = D._url || window._lastAuditUrl || '';
     if (!auditUrl) throw new Error('no url');
 
+    // Set URL bar
     const urlBar = $('desk-url-bar');
     if (urlBar) urlBar.textContent = auditUrl;
 
-    // PSI base64 screenshots (available when PAGESPEED_API_KEY is set)
+    // PSI base64 screenshots — available when PAGESPEED_API_KEY is set in Vercel
     const mobShot  = D.us?.mob?._screenshot || '';
     const deskShot = D.us?.desk?._screenshot || '';
 
-    // Google PageSpeed screenshot API — works without key for public sites
-    // Returns a real Lighthouse screenshot as webp/jpeg
-    const enc = encodeURIComponent(auditUrl);
-    const psiScreenUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${enc}&strategy=mobile&category=PERFORMANCE`;
-
-    function showShot(containerId, b64data) {
-      const el = $(containerId);
-      if (!el) return;
-      el.innerHTML = `<img src="data:image/jpeg;base64,${b64data}"
-        style="width:100%;height:100%;object-fit:cover;object-position:top 0"
-        alt="Site screenshot" loading="lazy"/>`;
+    function showImg(screenId, placeholderId, b64) {
+      const screen = $(screenId);
+      if (!screen) return;
+      const img = new Image();
+      img.onload = () => {
+        screen.innerHTML = '';
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;object-position:top center;display:block';
+        screen.appendChild(img);
+      };
+      img.onerror = () => showUnavailable(screenId, auditUrl);
+      img.src = 'data:image/jpeg;base64,' + b64;
     }
 
-    function showFallback(containerId, label) {
-      const el = $(containerId);
+    function showUnavailable(screenId, url) {
+      const el = $(screenId);
       if (!el) return;
-      el.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;
-        align-items:center;justify-content:center;gap:10px;background:#f8fafc;padding:16px">
-        <div style="width:40px;height:40px;border-radius:50%;background:#e5e7eb;
-          display:flex;align-items:center;justify-content:center">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2"/>
-            <path d="M8 21h8M12 17v4"/>
-          </svg>
-        </div>
-        <div style="font-size:11px;color:#6b7280;text-align:center;line-height:1.5">
-          <strong style="color:#374151">${label}</strong><br>
-          <span style="font-size:10px;color:#9ca3af">Add PAGESPEED_API_KEY<br>for live screenshots</span>
-        </div>
-        <a href="${auditUrl}" target="_blank" rel="noopener"
-          style="font-size:11px;color:#3b82f6;text-decoration:none;font-weight:500;
-          border:1px solid #bfdbfe;border-radius:6px;padding:4px 10px;background:#eff6ff">
-          Open site ↗
-        </a>
-      </div>`;
+      el.innerHTML = `
+        <div style="height:100%;display:flex;flex-direction:column;align-items:center;
+          justify-content:center;gap:10px;background:#f8fafc;padding:16px">
+          <div style="width:40px;height:40px;border-radius:50%;background:#fee2e2;
+            display:flex;align-items:center;justify-content:center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e8453c" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <path d="M8 21h8M12 17v4"/>
+            </svg>
+          </div>
+          <div style="font-size:10.5px;color:#374151;text-align:center;line-height:1.5;font-weight:500">
+            Screenshot unavailable
+          </div>
+          <div style="font-size:10px;color:#9ca3af;text-align:center;line-height:1.5">
+            Add <code style="background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:9px">PAGESPEED_API_KEY</code><br>to Vercel for live screenshots
+          </div>
+          <a href="${url}" target="_blank" rel="noopener"
+            style="font-size:11px;color:#e8453c;text-decoration:none;font-weight:600;
+            border:1px solid #fecaca;border-radius:6px;padding:4px 12px;background:#fff5f5">
+            Open site ↗
+          </a>
+        </div>`;
     }
 
-    // If PSI screenshots already available (from PAGESPEED_API_KEY), use them
     if (mobShot) {
-      showShot('mob-screen',  mobShot);
-      showShot('tab-screen',  mobShot);  // use mobile shot for tablet too
+      // Have PSI screenshot — use it for all frames
+      showImg('mob-screen',  'mob-placeholder',  mobShot);
+      showImg('tab-screen',  'tab-placeholder',  mobShot);
+      showImg('desk-screen', 'desk-placeholder', deskShot || mobShot);
     } else {
-      showFallback('mob-screen',  'Mobile Preview');
-      showFallback('tab-screen',  'Tablet Preview');
-    }
-
-    if (deskShot) {
-      showShot('desk-screen', deskShot);
-    } else if (!mobShot) {
-      showFallback('desk-screen', 'Desktop Preview');
-    } else {
-      showFallback('desk-screen', 'Desktop Preview');
-    }
-
-    // If no PSI key, try fetching PSI without key — it still returns screenshots sometimes
-    if (!mobShot && !deskShot) {
-      fetch(psiScreenUrl)
-        .then(r => r.json())
+      // No PSI key set — try PSI without key (sometimes works for popular sites)
+      const enc = encodeURIComponent(auditUrl);
+      fetch(`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${enc}&strategy=mobile&category=PERFORMANCE`)
+        .then(r => r.ok ? r.json() : null)
         .then(psiData => {
+          if (!psiData) { throw new Error('no data'); }
           const audits = psiData?.lighthouseResult?.audits || {};
-          const shotData = audits['final-screenshot']?.details?.data || '';
-          const thumbs   = audits['screenshot-thumbnails']?.details?.items || [];
-          const lastThumb = thumbs.length ? thumbs[thumbs.length-1]?.data || '' : '';
-          const b64 = (shotData || lastThumb || '').replace('data:image/jpeg;base64,','');
-          if (b64) {
-            showShot('mob-screen',  b64);
-            showShot('tab-screen',  b64);
-            showShot('desk-screen', b64);
+          const finalShot = audits['final-screenshot']?.details?.data || '';
+          const thumbs    = audits['screenshot-thumbnails']?.details?.items || [];
+          const lastThumb = thumbs.length ? (thumbs[thumbs.length-1]?.data || '') : '';
+          const b64 = (finalShot || lastThumb).replace('data:image/jpeg;base64,','');
+          if (b64 && b64.length > 100) {
+            showImg('mob-screen',  'mob-placeholder',  b64);
+            showImg('tab-screen',  'tab-placeholder',  b64);
+            showImg('desk-screen', 'desk-placeholder', b64);
+          } else {
+            throw new Error('no screenshot');
           }
         })
-        .catch(() => {}); // silent fail — fallback already shown
+        .catch(() => {
+          showUnavailable('mob-screen',  auditUrl);
+          showUnavailable('tab-screen',  auditUrl);
+          showUnavailable('desk-screen', auditUrl);
+        });
     }
-
-  } catch(e){ console.warn('Device preview:', e); }
-  window.scrollTo(0,0);
+  } catch(e){
+    console.warn('Device preview:', e);
+    ['mob-screen','tab-screen','desk-screen'].forEach(id => {
+      const el = $(id);
+      if (el) el.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center"><div style="font-size:10px;color:#9ca3af">Preview unavailable</div></div>';
+    });
+  }  window.scrollTo(0,0);
   $('btn-start').disabled=false;
 }
 
