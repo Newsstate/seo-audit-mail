@@ -1617,61 +1617,92 @@ function openEmailModal(data, name, email){
 function closeModalAndShowReport(){
   $('email-modal-overlay').classList.remove('open');
   show('page-report');
-  // Load device preview screenshots
+  // ── Device Preview Screenshots ──
   try {
     const auditUrl = D._url || window._lastAuditUrl || '';
-    if (auditUrl) {
-      const urlBar = $('desk-url-bar');
-      if(urlBar) urlBar.textContent = auditUrl;
+    if (!auditUrl) throw new Error('no url');
 
-      // Use PSI screenshot data if available (from PAGESPEED_API_KEY)
-      const mobShot = D.us?.mob?._screenshot;
-      const deskShot = D.us?.desk?._screenshot;
+    const urlBar = $('desk-url-bar');
+    if (urlBar) urlBar.textContent = auditUrl;
 
-      // Fallback: use a public screenshot service
-      // thum.io provides free screenshots (no key needed)
-      const enc = encodeURIComponent(auditUrl);
+    // PSI base64 screenshots (available when PAGESPEED_API_KEY is set)
+    const mobShot  = D.us?.mob?._screenshot || '';
+    const deskShot = D.us?.desk?._screenshot || '';
 
-      function loadScreenshot(containerId, shotData, serviceUrl, fallbackMsg) {
-        const el = $(containerId);
-        if (!el) return;
-        if (shotData) {
-          // PSI provides base64 screenshot
-          el.innerHTML = `<img src="data:image/jpeg;base64,${shotData}"
-            style="width:100%;height:100%;object-fit:cover;object-position:top" alt="Screenshot"/>`;
-        } else {
-          // Try screenshot service
-          const img = document.createElement('img');
-          img.style.cssText = 'width:100%;height:100%;object-fit:cover;object-position:top';
-          img.alt = 'Site preview';
-          img.onload = () => {};
-          img.onerror = () => {
-            el.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;background:#f9fafb">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-              <div style="font-size:10px;color:#9ca3af;text-align:center">Preview unavailable<br><span style="font-size:9px">(site blocks external loading)</span></div>
-              <a href="${auditUrl}" target="_blank" style="font-size:10px;color:#3b82f6;text-decoration:none">Open site ↗</a>
-            </div>`;
-          };
-          // Use thum.io free screenshot service
-          img.src = `https://image.thum.io/get/width/600/crop/400/${auditUrl}`;
-          el.innerHTML = '';
-          el.appendChild(img);
-        }
-      }
+    // Google PageSpeed screenshot API — works without key for public sites
+    // Returns a real Lighthouse screenshot as webp/jpeg
+    const enc = encodeURIComponent(auditUrl);
+    const psiScreenUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${enc}&strategy=mobile&category=PERFORMANCE`;
 
-      // Mobile — use portrait crop
-      loadScreenshot('mob-screen', mobShot,
-        `https://image.thum.io/get/width/390/crop/844/${enc}`, 'Mobile preview');
-
-      // Tablet
-      loadScreenshot('tab-screen', null,
-        `https://image.thum.io/get/width/768/crop/600/${enc}`, 'Tablet preview');
-
-      // Desktop
-      loadScreenshot('desk-screen', deskShot,
-        `https://image.thum.io/get/width/1280/crop/800/${enc}`, 'Desktop preview');
+    function showShot(containerId, b64data) {
+      const el = $(containerId);
+      if (!el) return;
+      el.innerHTML = `<img src="data:image/jpeg;base64,${b64data}"
+        style="width:100%;height:100%;object-fit:cover;object-position:top 0"
+        alt="Site screenshot" loading="lazy"/>`;
     }
-  } catch(e){ console.warn('Device preview error:', e); }
+
+    function showFallback(containerId, label) {
+      const el = $(containerId);
+      if (!el) return;
+      el.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;gap:10px;background:#f8fafc;padding:16px">
+        <div style="width:40px;height:40px;border-radius:50%;background:#e5e7eb;
+          display:flex;align-items:center;justify-content:center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8M12 17v4"/>
+          </svg>
+        </div>
+        <div style="font-size:11px;color:#6b7280;text-align:center;line-height:1.5">
+          <strong style="color:#374151">${label}</strong><br>
+          <span style="font-size:10px;color:#9ca3af">Add PAGESPEED_API_KEY<br>for live screenshots</span>
+        </div>
+        <a href="${auditUrl}" target="_blank" rel="noopener"
+          style="font-size:11px;color:#3b82f6;text-decoration:none;font-weight:500;
+          border:1px solid #bfdbfe;border-radius:6px;padding:4px 10px;background:#eff6ff">
+          Open site ↗
+        </a>
+      </div>`;
+    }
+
+    // If PSI screenshots already available (from PAGESPEED_API_KEY), use them
+    if (mobShot) {
+      showShot('mob-screen',  mobShot);
+      showShot('tab-screen',  mobShot);  // use mobile shot for tablet too
+    } else {
+      showFallback('mob-screen',  'Mobile Preview');
+      showFallback('tab-screen',  'Tablet Preview');
+    }
+
+    if (deskShot) {
+      showShot('desk-screen', deskShot);
+    } else if (!mobShot) {
+      showFallback('desk-screen', 'Desktop Preview');
+    } else {
+      showFallback('desk-screen', 'Desktop Preview');
+    }
+
+    // If no PSI key, try fetching PSI without key — it still returns screenshots sometimes
+    if (!mobShot && !deskShot) {
+      fetch(psiScreenUrl)
+        .then(r => r.json())
+        .then(psiData => {
+          const audits = psiData?.lighthouseResult?.audits || {};
+          const shotData = audits['final-screenshot']?.details?.data || '';
+          const thumbs   = audits['screenshot-thumbnails']?.details?.items || [];
+          const lastThumb = thumbs.length ? thumbs[thumbs.length-1]?.data || '' : '';
+          const b64 = (shotData || lastThumb || '').replace('data:image/jpeg;base64,','');
+          if (b64) {
+            showShot('mob-screen',  b64);
+            showShot('tab-screen',  b64);
+            showShot('desk-screen', b64);
+          }
+        })
+        .catch(() => {}); // silent fail — fallback already shown
+    }
+
+  } catch(e){ console.warn('Device preview:', e); }
   window.scrollTo(0,0);
   $('btn-start').disabled=false;
 }
