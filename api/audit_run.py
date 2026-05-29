@@ -464,6 +464,7 @@ def _psi(url, strategy, api_key):
         f"&strategy={strategy}"
         f"&key={api_key}"
         f"&category=PERFORMANCE"
+        f"&category=BEST_PRACTICES"  # needed for final-screenshot audit
     )
     try:
         req = urllib.request.Request(endpoint, headers={"User-Agent": UA})
@@ -548,11 +549,19 @@ def _psi(url, strategy, api_key):
         cls_display = _fmt_cls(cls_num)
         crux_source = False
 
-    # Extract screenshot (PSI provides base64 final screenshot)
+    # Extract screenshot — final-screenshot requires BEST_PRACTICES category
     screenshot_b64 = ""
     try:
+        # Primary: final-screenshot (full page render)
         ss = audits.get("final-screenshot", {}).get("details", {})
-        screenshot_b64 = ss.get("data", "").replace("data:image/jpeg;base64,", "")
+        screenshot_b64 = ss.get("data", "")
+        # Fallback: last thumbnail from screenshot-thumbnails
+        if not screenshot_b64:
+            thumbs = audits.get("screenshot-thumbnails", {}).get("details", {}).get("items", [])
+            if thumbs:
+                screenshot_b64 = thumbs[-1].get("data", "")
+        # Strip data URI prefix — we add it back in the frontend
+        screenshot_b64 = screenshot_b64.replace("data:image/jpeg;base64,", "").replace("data:image/webp;base64,", "")
     except Exception:
         pass
 
