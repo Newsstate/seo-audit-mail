@@ -1227,6 +1227,10 @@ class handler(BaseHTTPRequestHandler):
 
             # CrUX (free, always) + PSI (if key set) — run in parallel
             mob_psi, desk_psi, cwv_psi = fetch_pagespeed(url)  # PageSpeed API (optional)
+            # Strip _raw (full PSI JSON) before storage — only keep screenshot
+            for _p in [mob_psi, desk_psi]:
+                if _p and "_raw" in _p:
+                    del _p["_raw"]
 
             # CrUX: extract from PSI response (free) or call CrUX API separately
             mob_raw = (mob_psi or {}).get("_raw")
